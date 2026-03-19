@@ -271,7 +271,7 @@ class Track:
             return self._get_lines_along_rays_line(positions, ray_angles, max_dist=max_dist)
         return self._get_lines_along_rays_sphere(positions, ray_angles, max_dist=max_dist)
     
-    def offset_track_borders(centerline, outer_width=80, inner_width=20):
+    def offset_track_borders(self,centerline, outer_width=80, inner_width=20):
         """
         Returns a tuple: (inner_border, outer_border)
         - outer_border: centerline pushed outward by outer_width
