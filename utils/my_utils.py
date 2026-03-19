@@ -179,7 +179,7 @@ def compute_step_reward(
 
     speed_reward_rate = 0.005  # reward per unit speed (increased from 0.001)
     collision_penalty_rate = 50  # penalty for collision
-    gate_pass_reward_rate = 5.0  # (10.0 when starting new later 1.0)reward for passing a gate
+    gate_pass_reward_rate = 2.0  # (10.0 when starting new later 1.0)reward for passing a gate
     wall_penalty_rate = 5  #(1.0 when starting new later 0.5) penalty for hitting the wall
     direction_reward_rate = 0.01  #(0.05 when starting new later 0.005) reward for heading toward next gate
     alive_reward_rate = 0.025  # (0.1 when starting new later 0.01) default alive reward

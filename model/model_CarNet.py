@@ -79,14 +79,16 @@ class CarState:
         self.gates_passed = torch.zeros(n_cars, dtype=torch.int, device=device)
 
         self.prev_steer = torch.zeros(n_cars, dtype=torch.float32, device=device)
-        self.steer_smooth_alpha = 0.0
+        self.steer_smooth_alpha = 0.0  # Steering smoothing factor (0 = no smoothing)
 
         self.max_speed = 140.0
-        self.accel_rate = 20.0
-        self.steering_rate = 1.0
-        self.drift_factor = 0.1
-        self.friction = 0.05
-        self.cornering_factor = 0.25
+        self.accel_rate = 5.0
+        self.friction = 0.02
+        self.drift_factor = 0.5  # Velocity lag: 0 = instant, 1 = no effect
+        self.wheelbase = 15.0
+        self.max_steering_angle = math.pi / 4
+        self.max_grip_accel = 15.0
+        self.max_steering_rate = 0.1  # Max steering change per frame (prevents instant left-right switching) 
 
     def reset(self, track, start_idx):
         """Reset car positions and velocities for a new episode.
@@ -156,49 +158,98 @@ class CarState:
         """
         return self.angle.unsqueeze(1) + self.ray_offsets.unsqueeze(0)
 
-    def step_physics(self, steering, accel, dt=0.1, steer_smooth_alpha=None):
-        
-        accel_rate = self.accel_rate
-        steering_rate = self.steering_rate
-        max_speed = self.max_speed
-        drift_factor = self.drift_factor
-        friction = self.friction
-        cornering_factor = self.cornering_factor
+    def physics_update(self, steering, accel, dt=0.1, steer_smooth_alpha=None):
+        """Update car physics: steering, acceleration, grip, drift, and position.
 
-        alpha = self.steer_smooth_alpha if steer_smooth_alpha is None else steer_smooth_alpha
-        if alpha > 0.0:
-            steering = alpha * self.prev_steer + (1.0 - alpha) * steering
-            self.prev_steer = steering
+        Args:
+            steering: Input steering [-1, 1] from neural network
+            accel: Input acceleration [-1, 1] from neural network
+            dt: Timestep in seconds (default 0.1)
+            steer_smooth_alpha: Unused (kept for compatibility)
+        """
+        # Cache physics parameters (local access is faster than self. lookups)
+        accel_rate = self.accel_rate
+        max_speed = self.max_speed
+        friction = self.friction
+        drift_factor = self.drift_factor
+        wheelbase = self.wheelbase
+        max_steering_angle = self.max_steering_angle
+        max_steering_rate = self.max_steering_rate
+        max_grip_accel = self.max_grip_accel
 
         self.prev_pos = self.pos.clone()
 
-        # Update angle
-        self.angle = self.angle + steering * steering_rate * dt
+        # ============================================================================
+        # STEERING: Rate limiting + speed-dependent response
+        # ============================================================================
+        # Prevent instantaneous steering reversals (steering inertia)
+        steering_delta = torch.clamp(steering - self.prev_steer, -max_steering_rate, max_steering_rate)
+        steering = self.prev_steer + steering_delta
+        self.prev_steer = steering
 
-        # Update speed with acceleration then apply friction
+        # At high speeds, reduce steering authority (can't turn as sharply)
+        speed_normalized = self.speed / max_speed
+        steering_reduction = 1.0 - 0.8 * speed_normalized  # 40% steering at max speed
+        effective_max_steering_angle = max_steering_angle * steering_reduction
+        steering_angle = torch.clamp(steering, -1.0, 1.0) * effective_max_steering_angle
+
+        # ============================================================================
+        # SPEED: Acceleration + friction
+        # ============================================================================
         self.speed = self.speed + accel * accel_rate * dt
         self.speed = self.speed * (1.0 - friction * dt)
-
-        # Centripetal speed loss: proportional to steering magnitude
-        turn_magnitude = steering.abs()
-        self.speed = self.speed * (1.0 - cornering_factor * turn_magnitude * dt)
-
         self.speed = torch.clamp(self.speed, -max_speed, max_speed)
 
-        # Compute heading [batch_size, 2]
+        # ============================================================================
+        # TURNING: Ackermann steering kinematics
+        # ============================================================================
+        # Turning radius from steering angle: r = wheelbase / tan(angle)
+        turning_radius = wheelbase / torch.tan(steering_angle.abs())
+
+        # Angular velocity: ω = v / r (how fast the car rotates)
+        steering_sign = torch.sign(steering_angle)
+        steering_sign = torch.where(steering_sign == 0, torch.ones_like(steering_sign), steering_sign)
+        angular_velocity = (self.speed / (turning_radius + 1e-6)) * steering_sign
+
+        # Update heading angle
+        self.angle = self.angle + angular_velocity * dt
+
+        # Current velocity direction
         heading = torch.stack([torch.cos(self.angle), torch.sin(self.angle)], dim=1)
+        ideal_velocity = heading * self.speed.unsqueeze(1)
 
-        # Current velocity
-        vel = self.vel.clone()
+        # ============================================================================
+        # GRIP & DRIFTING: Apply sliding when centrifugal force exceeds grip
+        # ============================================================================
+        # Required centripetal acceleration to maintain turn at current speed
+        centripetal_accel = (self.speed ** 2) / (turning_radius.abs() + 1e-6)
 
-        # Drift: blend current velocity toward heading * speed
-        ideal_velocity = heading * self.speed.unsqueeze(
-            1
-        )  # expand speed to [batch_size, 1]
-        self.vel = vel * (1 - drift_factor) + ideal_velocity * drift_factor
+        # How much we exceed available grip (0 = no slip, >1 = heavy slip)
+        slip_ratio = torch.clamp(centripetal_accel / max_grip_accel, 0.0, 2.0)
+        slip_mask = slip_ratio > 1.0
+        fullsteer_mask = slip_ratio <= 1.0
 
-        # Update position
+        # Speed loss from drifting (lateral friction during oversteer)
+        slip_excess = (slip_ratio - 1.0).clamp(min=0.0)
+        drift_friction_factor = 1.0  # Tunable: higher = more speed loss while drifting
+        self.speed[slip_mask] = self.speed[slip_mask] * (1.0 - slip_excess[slip_mask] * drift_friction_factor * dt)
+
+        # Recompute ideal velocity with the new (lower) speed from drift friction
+        ideal_velocity = heading * self.speed.unsqueeze(1)
+
+        # Update velocity:
+        # - Within grip: velocity snaps to ideal heading instantly
+        # - While slipping: velocity lags behind heading (smooth drift effect)
+        self.vel[slip_mask] = self.vel[slip_mask]*(1 - drift_factor*dt) + ideal_velocity[slip_mask]*drift_factor*dt
+        self.vel[fullsteer_mask] = ideal_velocity[fullsteer_mask]
+
+        # ============================================================================
+        # POSITION & SYNC
+        # ============================================================================
         self.pos += self.vel * dt
+
+        # Keep self.speed synced with actual velocity magnitude (after all blending)
+        self.speed = torch.norm(self.vel, dim=1)
 
     def check_collisions(self, track):
         """Update active status based on collisions with track walls.

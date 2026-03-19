@@ -1,7 +1,16 @@
+"""
+Training script for racing neural network models.
+
+This module implements the main training loop for vehicle control models using
+policy gradient learning with vectorized training across multiple cars.
+"""
+
 import torch
 import torch.optim as optim
 from torch.distributions import Normal
 import os
+import random
+import json
 
 from tqdm import tqdm, trange
 
@@ -10,6 +19,7 @@ from track import Track
 from model import CarState, CarNet, GRUCarNet, LSTMCarNet
 from utils import compute_step_reward, get_inputs, args_nn, RewardPlotter
 
+# Default path for saving training checkpoints
 CHECKPOINT_PATH = "last_ckpt.pth"
 
 
@@ -31,39 +41,47 @@ def train_model(
     max_ray_dist=500,
     steer_smooth_alpha=0.0,
 ):
-    """Vectorized training loop for multiple cars using CarState and get_inputs.
+    """Vectorized training loop for multiple cars using policy gradient learning.
+
+    Uses CarState for efficient vectorized physics simulation with multiple cars.
+    At each step, the model predicts steer and acceleration for all cars simultaneously.
+    Rewards are computed for each car based on speed, gate progress, collisions, etc.
+    Policy gradients are accumulated and backpropagated after each epoch.
 
     Args:
-        model: CarNet already moved to device
-        tracks: Track object or list of Track objects for multi-track training
-        n_cars: number of cars per batch
-        n_rays: number of rays per car
-        n_epochs: training epochs
-        n_steps: simulation steps per epoch
-        lr: learning rate (unused, optimizer provided separately)
-        device: torch.device
-        start_epoch: epoch to resume from
-        start_idx: starting gate index
-        checkpoint_path: path to save checkpoints to
-        scheduler: optional LR scheduler (e.g. ReduceLROnPlateau)
-        best_reward: best mean episode reward seen so far
+        model: CarNet (or variants) already moved to device.
+        tracks: Track object or list of Track objects for multi-track training.
+        optimizer: Torch optimizer (e.g., Adam) for model parameters.
+        n_cars: Number of cars per batch (vectorized training).
+        n_rays: Number of rays per car for obstacle detection.
+        n_epochs: Total number of training epochs.
+        n_steps: Maximum simulation steps per epoch.
+        lr: Learning rate (unused here, optimizer provided separately).
+        device: torch.device to use for training.
+        start_epoch: Epoch to resume from (for checkpoint restoring).
+        start_idx: Starting gate index for each car.
+        checkpoint_path: Where to save model checkpoints.
+        scheduler: Optional LR scheduler (e.g., ReduceLROnPlateau).
+        best_reward: Best mean episode reward seen so far (for tracking).
+        max_ray_dist: Maximum distance for ray casting.
+        steer_smooth_alpha: Smoothing factor for steering (0.0 = no smoothing).
     """
-    import random
     device = device or torch.device("cpu")
 
-    # Initialize reward plotter in a separate process to keep GUI responsive.
+    # Initialize reward plotter in a separate process to keep GUI responsive
     plotter = RewardPlotter()
 
-    # Handle both single track and multi-track
+    # Handle both single track and multi-track training setups
     if not isinstance(tracks, list):
         tracks = [tracks]
 
-    # ---- Initialize car states ----
+    # Initialize vectorized car states for parallel training
     cars = CarState(n_cars, n_rays, device=device)
 
     gate_idx_start = start_idx
 
-    # ---- Gate tracking ----
+    # Initialize gate tracking tensors for all cars
+    # Each car tracks which gate it's currently aiming for and has passed
     gate_indices = torch.full(
         (n_cars,), gate_idx_start, dtype=torch.long, device=device
     )
@@ -85,25 +103,23 @@ def train_model(
 
     try:
         for epoch in epoch_bar:
-            # ---- Select track (for multi-track training) ----
+            # Randomly select a track for this epoch (supports multi-track training)
             track = random.choice(tracks)
             gates_tensor = track.gates.clone().to(device)
             track_start_idx = track.gates.shape[0] - 1
             gate_idx_start = track_start_idx
             track_name = track.track_name
 
-            # Print track selection for debugging
-            #epoch_bar.write(f"Selected track for epoch {epoch}: {track_name}")
-
-            # ---- Reset cars each epoch ----
+            # Reset all cars to starting position for this epoch
             cars.reset(track=track, start_idx=track_start_idx)
 
+            # Reset gate tracking indices for all cars
             gate_indices.fill_(gate_idx_start)
             last_gate_indices.fill_(gate_idx_start - 1)
             gate_times.zero_()
             prev_dist.zero_()
 
-            # ---- Initialize LSTM hidden state for this epoch ----
+            # Initialize RNN hidden state for this epoch (GRU/LSTM models only)
             if hasattr(model, 'init_hidden'):
                 hidden = model.init_hidden(n_cars, device)
             else:
@@ -111,6 +127,7 @@ def train_model(
 
             step_bar = tqdm(range(n_steps), desc=f"Epoch {epoch} [{track_name}]", leave=False, position=1)
 
+            # Initialize buffers to store rewards for each reward component across all steps
             rewards_buffer = {
                 "speed": torch.zeros(n_steps, n_cars, device=device),
                 "gate": torch.zeros(n_steps, n_cars, device=device),
@@ -120,18 +137,20 @@ def train_model(
                 "alive": torch.zeros(n_steps, n_cars, device=device),
             }
 
+            # Buffers for policy gradients and total rewards per step
             log_probs = torch.zeros(n_steps, n_cars, device=device)
             step_rewards_total = torch.zeros(n_steps, n_cars, device=device)
 
             for step in step_bar:
                 if not cars.active.any():
-                    break  # all cars inactive
+                    break  # Early exit if all cars have crashed
 
-                # ---- Compute NN inputs ----
+                # Compute the center point of the next gate each car is aiming for
                 next_gate_centers = (
                     gates_tensor[gate_indices, 0:2] + gates_tensor[gate_indices, 2:4]
                 ) / 2
 
+                # Get ray distances and model inputs from the track and car states
                 inputs, ray_dists = get_inputs(
                     track,
                     cars,
@@ -141,9 +160,9 @@ def train_model(
                     gate_indices=gate_indices
                 )
 
-                # ---- Forward pass ----
+                # Forward pass through the model
                 if hidden is not None:
-                    # GRU/LSTM model: pass hidden state and get new hidden state
+                    # RNN model: pass hidden state and get updated hidden state
                     outputs, hidden = model(inputs, hidden)
                     # Detach hidden state to prevent backprop through entire episode
                     if isinstance(hidden, tuple):
@@ -153,31 +172,29 @@ def train_model(
                         # GRU returns single tensor
                         hidden = hidden.detach()
                 else:
-                    # Regular feedforward model
+                    # Feedforward model: no hidden state
                     outputs = model(inputs)
 
+                # Extract mean values for steer and acceleration from model output
                 steer_mean = outputs[:, 0]
                 accel_mean = outputs[:, 1]
 
+                # Create normal distributions for stochastic action sampling
                 steer_dist = Normal(steer_mean, 0.1)
-                accel_dist = Normal(accel_mean, 0.15)  # Reduced from 0.3 to 0.15 for more consistent learning
+                accel_dist = Normal(accel_mean, 0.15)  # std reduced from 0.3 for more consistent learning
 
                 steer = torch.clamp(steer_dist.sample(), -1, 1)
                 accel = torch.clamp(accel_dist.sample(), -1, 1)
 
+                # Compute log probabilities for policy gradient
                 log_prob = steer_dist.log_prob(steer) + accel_dist.log_prob(accel)
                 log_probs[step] = log_prob
 
-                # Exploration: 10% random actions
-                #epsilon = 0.1
-                #rand_mask = torch.rand_like(steer) < epsilon
-                #steer[rand_mask] = (torch.rand_like(steer[rand_mask]) * 2 - 1) * 0.3
-
-                # ---- Update physics ----
+                # Physics update: compute new positions based on actions
                 with torch.no_grad():
-                    cars.step_physics(steer, accel, dt=0.1, steer_smooth_alpha=steer_smooth_alpha)
+                    cars.physics_update(steer, accel, dt=0.1, steer_smooth_alpha=steer_smooth_alpha)
 
-                # ---- Compute rewards ----
+                # Compute reward components for this step
                 step_rewards, prev_dist = compute_step_reward(
                     cars,
                     track,
@@ -191,6 +208,7 @@ def train_model(
                     max_ray_dist
                 )
 
+                # Sum all reward components for total reward this step
                 reward = (
                     step_rewards["speed"]
                     + step_rewards["gate"]
@@ -202,43 +220,49 @@ def train_model(
 
                 step_rewards_total[step] = reward
 
-                # Store in buffer
+                # Store individual reward components in buffer for logging
                 for k in step_rewards:
                     rewards_buffer[k][step] = step_rewards[k]
 
                 if step % 20 == 0:
-                    active_count = cars.active.sum().item()  # number of active cars
+                    active_count = cars.active.sum().item()
                     step_bar.set_postfix(active_cars=f"{active_count}/{n_cars}")
 
-            # Compute returns (cumulative rewards)
+            # Compute and Normalize returns to reduce variance in policy gradient estimates
             returns = step_rewards_total.sum(dim=0)
             returns = (returns - returns.mean()) / (returns.std() + 1e-6)
 
-            # Policy gradient loss
+            # Policy gradient loss: maximize expected return weighted by log probability
             loss = -(log_probs.sum(dim=0) * returns).mean()
 
+            # Backpropagation: reset gradients, compute gradients, update weights
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
+            # Compute mean reward for this epoch across all cars
             episode_reward = step_rewards_total.sum(dim=0).mean().item()
 
+            # Update learning rate scheduler if provided
             if scheduler is not None:
                 scheduler.step(episode_reward)
 
-            # Logging and checkpointing
+            # Compute mean reward for each component across all cars and steps
             mean_rewards = {}
             for key, buf in rewards_buffer.items():
                 mean_rewards[key] = buf.sum(dim=0).mean().item()
 
+            # Track current learning rate
             current_lr = optimizer.param_groups[0]["lr"]
 
+            # Update best reward tracking
             if episode_reward > best_reward:
                 best_reward = episode_reward
 
-            # Add reward to plotter (every epoch)
+            # Send reward to plotter for real-time visualization
             plotter.add_reward(episode_reward)
 
+            # Log metrics every 10 epochs
             if epoch % 10 == 0 and epoch != 0:
                 epoch_bar.write(
                     f"Epoch {epoch} [{track_name}] | Total reward: {episode_reward:.2f} | "
@@ -247,6 +271,7 @@ def train_model(
                     f"Alive:{mean_rewards['alive']:.2f} | Best:{best_reward:.2f} | LR:{current_lr:.2e}"
                 )
 
+            # Save checkpoint every epoch
             _save_checkpoint(
                 epoch,
                 model,
@@ -259,7 +284,7 @@ def train_model(
     finally:
         plotter.close()
 
-    # Final checkpoint
+    # Final checkpoint save
     _save_checkpoint(
         epoch,
         model,
@@ -280,7 +305,20 @@ def _save_checkpoint(
     scheduler=None,
     best_reward=-float("inf"),
 ):
-    """Save model and optimizer checkpoint."""
+    """Save model and optimizer state for checkpoint resuming.
+
+    Saves model weights, optimizer state, learning rate scheduler state,
+    and training metadata needed to resume training from this epoch.
+
+    Args:
+        epoch: Current epoch number.
+        model: Model with state to save.
+        optimizer: Optimizer with state to save.
+        checkpoint_path: Where to save the checkpoint.
+        total_epochs: Total number of epochs planned for training.
+        scheduler: Optional LR scheduler with state to save.
+        best_reward: Best reward achieved so far.
+    """
     torch.save(
         {
             "epoch": epoch,
@@ -297,26 +335,27 @@ def _save_checkpoint(
 
 def main():
     """Initialize and train the racing model with command-line argument support."""
+    # Parse command-line arguments
     parser = args_nn()
-
     args = parser.parse_args()
 
-    # Save arguments to config.json for reproducibility
-    import json
+    # Save configuration to JSON for reproducibility
     with open("config.json", "w") as f:
         json.dump(vars(args), f, indent=2)
 
-    # Show config
+    # Print training setup information
     if args.multi_track:
         print(f"Config saved: Multi-track training (square + square_narrow + redbull_ring)")
     else:
         print(f"Config saved: Single-track training ({args.track})")
     print(f"Config file: config.json\n")
 
+    # Disable anomaly detection for faster training
     torch.autograd.set_detect_anomaly(False)
 
     screen_width, screen_height = 1000, 600
 
+    # Extract training hyperparameters from arguments
     input_dim = args.input_dim
     hidden_dim = args.hidden_dim
     output_dim = args.output_dim
@@ -327,8 +366,7 @@ def main():
     max_ray_dist = args.max_ray_dist
     lr = args.lr
 
-
-    # Device selection
+    # Select device for training (GPU/Metal/CPU)
     if args.device:
         device = torch.device(args.device)
     else:
@@ -338,7 +376,7 @@ def main():
             else torch.device("cpu")
         )
 
-    # Load track(s)
+    # Load track(s) for training
     if args.multi_track:
         tracks = [
             Track("square", screen_width, screen_height, device=device, ray_method=args.ray_method),
@@ -354,7 +392,7 @@ def main():
     print(f"Using device: {device}")
     print(f"Configuration: n_cars={n_cars}, n_rays={n_rays}, n_epochs={n_epochs}, n_steps={n_steps}, lr={lr}")
 
-    # Load model and optimizer
+    # Initialize model based on model type argument
     if args.model == "lstm":
         model = LSTMCarNet(
             input_dim=input_dim, hidden_dim=hidden_dim, output_dim=output_dim, n_rays=n_rays, lstm_layers=1
@@ -372,24 +410,27 @@ def main():
         print(f"Using CarNet")
     else:
         raise ValueError(f"Unknown model type: {args.model}")
+
+    # Initialize optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    # Create checkpoints directory and set checkpoint path with model name
+    # Set up checkpoint directory and path with model name
     checkpoint_dir = "checkpoints"
     os.makedirs(checkpoint_dir, exist_ok=True)
-    model_name = model.__class__.__name__  # e.g., "LSTMCarNet", "CarNet", "SeparateHeadsCarNet"
+    model_name = model.__class__.__name__
 
-    # If args.checkpoint is just a filename (no directory), use checkpoints/ directory
+    # Construct checkpoint path using model name to avoid conflicts
     if os.path.dirname(args.checkpoint) == "":
-        # Extract the base name pattern (e.g., "last_ckpt" from "last_ckpt.pth")
+        # No directory in checkpoint path, use checkpoints/ directory
         checkpoint_base = os.path.splitext(args.checkpoint)[0]
         checkpoint_path = os.path.join(checkpoint_dir, f"{checkpoint_base}_{model_name}.pth")
     else:
-        # User provided a full path, use it as-is
+        # User provided full path, use as-is
         checkpoint_path = args.checkpoint
 
     print(f"Checkpoint will be saved to: {checkpoint_path}")
 
+    # Initialize learning rate scheduler if not disabled
     scheduler = None
     if not args.disable_lr_scheduler:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -400,16 +441,20 @@ def main():
             min_lr=args.min_lr,
         )
 
+    # Track training state for resuming from checkpoints
     start_epoch = 0
     best_reward = -float("inf")
 
+    # Load checkpoint if available
     if os.path.exists(checkpoint_path):
         print(f"Loading checkpoint from {checkpoint_path}...")
         checkpoint = torch.load(checkpoint_path, map_location=device)
 
+        # Restore model and optimizer state
         model.load_state_dict(checkpoint["model_state"])
         optimizer.load_state_dict(checkpoint["optimizer_state"])
 
+        # Restore scheduler state if applicable
         if scheduler is not None and checkpoint.get("scheduler_state") is not None:
             scheduler.load_state_dict(checkpoint["scheduler_state"])
             if hasattr(scheduler, "min_lrs"):
@@ -418,7 +463,9 @@ def main():
 
         saved_epoch = checkpoint["epoch"]
 
+        # Handle different resume modes
         if args.start_mode == "start_new":
+            # Start new training but keep loaded weights
             start_epoch = 0
             best_reward = -float("inf")
             for param_group in optimizer.param_groups:
@@ -430,12 +477,14 @@ def main():
             if scheduler is not None and hasattr(scheduler, "num_bad_epochs"):
                 scheduler.num_bad_epochs = 0
         else:
+            # Resume training from where it left off
             start_epoch = saved_epoch + 1
             best_reward = checkpoint.get("best_reward", -float("inf"))
             if "current_lr" in checkpoint and not args.force_lr:
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = checkpoint["current_lr"]
             elif args.force_lr:
+                # Override checkpoint LR with command-line LR
                 for param_group in optimizer.param_groups:
                     param_group["lr"] = args.lr
                 print(f"Force LR enabled: using lr={args.lr} instead of checkpoint value.")
@@ -448,7 +497,7 @@ def main():
     else:
         print("No checkpoint found, starting fresh.")
 
-    # Training loop
+    # Run the training loop
     try:
         train_model(
             model,
@@ -460,7 +509,7 @@ def main():
             n_steps=n_steps,
             device=device,
             start_epoch=start_epoch,
-            start_idx=0,  # will be set per-track inside train_model
+            start_idx=0,  # Will be set per-track inside train_model
             checkpoint_path=checkpoint_path,
             scheduler=scheduler,
             best_reward=best_reward,

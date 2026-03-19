@@ -19,6 +19,7 @@ MAX_RENDER_FPS = 60  # optional cap on rendering speed
 # Tkinter visualization
 # -----------------------------
 class Simulation:
+    
     def __init__(self, track, model, n_cars=1, n_rays=13, start_idx=0, device="cpu", max_ray_dist=500, steer_smooth_alpha=0.6):
         self.track = track
         self.model = model.to(device)
@@ -130,7 +131,7 @@ class Simulation:
                 outputs = self.model(inputs)
             steer = outputs[:, 0]
             accel = outputs[:, 1]
-            self.cars.step_physics(steer, accel, dt=PHYSICS_DT, steer_smooth_alpha=self.steer_smooth_alpha)
+            self.cars.physics_update(steer, accel, dt=PHYSICS_DT, steer_smooth_alpha=self.steer_smooth_alpha)
             self.cars.check_collisions(self.track)
 
             # Advance gate indices when car is close to the current gate line
