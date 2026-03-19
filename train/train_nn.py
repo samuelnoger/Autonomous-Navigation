@@ -8,15 +8,15 @@ import os
 import sys
 
 # Model imports (make sure model.py and model_variants.py are in the same directory and importable)
-from Race.model import CarState
-from Race.model import CarNet
-from Race.model import GRUCarNet 
-from Race.model import LSTMCarNet
+from model import CarState
+from model import CarNet
+from model import GRUCarNet 
+from model import LSTMCarNet
 
 # Utils imports (make sure utils.py is in the same directory and importable)
-from Race.utils import compute_step_reward
-from Race.utils import get_inputs
-from Race.utils import args_nn
+from utils import compute_step_reward
+from utils import get_inputs
+from utils import args_nn
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:

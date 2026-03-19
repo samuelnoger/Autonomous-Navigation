@@ -2,7 +2,7 @@ import torch
 import math
 import numpy as np
 import cv2 # type: ignore
-from Race.utils.my_utils import line_intersection
+from utils.my_utils import line_intersection
 import geopandas as gpd # type: ignore
 
 class Track:
