@@ -1,29 +1,28 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
+from torch.distributions import Normal
 
 from tqdm import tqdm, trange
-from track import Track
-from torch.distributions import Normal
+from Race.track import Track
 import os
 import sys
 
 # Model imports (make sure model.py and model_variants.py are in the same directory and importable)
-from model import CarState
-from model import CarNet
-from model import GRUCarNet 
-from model_variants import LSTMCarNet
+from Race.model import CarState
+from Race.model import CarNet
+from Race.model import GRUCarNet 
+from Race.model import LSTMCarNet
 
 # Utils imports (make sure utils.py is in the same directory and importable)
-from utils import compute_step_reward
-from utils import get_inputs
-from utils import args_nn
+from Race.utils import compute_step_reward
+from Race.utils import get_inputs
+from Race.utils import args_nn
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.append(CURRENT_DIR)
 
-from plot_rewards import RewardPlotter
+from Race.utils.plot_rewards import RewardPlotter
 
 CHECKPOINT_PATH = "last_ckpt.pth"
 

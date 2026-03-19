@@ -2,9 +2,8 @@ import torch
 import math
 import numpy as np
 import cv2 # type: ignore
-import os
-from utils import get_items 
-from utils import line_intersection
+from Race.utils.my_utils import line_intersection
+import geopandas as gpd # type: ignore
 
 class Track:
     def __init__(
@@ -44,7 +43,7 @@ class Track:
         self.sphere_hit_epsilon = sphere_hit_epsilon
         self.sphere_min_step = sphere_min_step
 
-        self.left_border, self.right_border, self.gates = get_items(
+        self.left_border, self.right_border, self.gates = self.get_items(
             track_name,
             outer_width=self.outer_width,
             inner_width=self.inner_width,
@@ -133,7 +132,7 @@ class Track:
         # Convert to torch tensor
         self.distance_field = torch.tensor(dist, dtype=torch.float32, device=device)
 
-    def _sample_distance_field_bilinear(self, points, device):
+    def _sample_distance_field_bilinear(self, points):
         """Bilinear sample distance field at points of shape (K,2)."""
         x = points[:, 0]
         y = points[:, 1]
@@ -272,3 +271,230 @@ class Track:
             return self._get_lines_along_rays_line(positions, ray_angles, max_dist=max_dist)
         return self._get_lines_along_rays_sphere(positions, ray_angles, max_dist=max_dist)
     
+    def offset_track_borders(centerline, outer_width=80, inner_width=20):
+        """
+        Returns a tuple: (inner_border, outer_border)
+        - outer_border: centerline pushed outward by outer_width
+        - inner_border: centerline pushed slightly inward by inner_width
+        """
+        outer_border = []
+        inner_border = []
+        n = len(centerline)
+
+        for i in range(n):
+            p0 = centerline[(i - 1) % n]
+            p1 = centerline[i]
+            p2 = centerline[(i + 1) % n]
+
+            # Direction vectors
+            dx1, dy1 = p1[0] - p0[0], p1[1] - p0[1]
+            dx2, dy2 = p2[0] - p1[0], p2[1] - p1[1]
+
+            # Normalize
+            len1 = math.hypot(dx1, dy1) or 1
+            len2 = math.hypot(dx2, dy2) or 1
+            dx1 /= len1
+            dy1 /= len1
+            dx2 /= len2
+            dy2 /= len2
+
+            # Average direction
+            avg_dx = dx1 + dx2
+            avg_dy = dy1 + dy2
+            avg_len = math.hypot(avg_dx, avg_dy) or 1
+            avg_dx /= avg_len
+            avg_dy /= avg_len
+
+            # Perpendicular (normal) vector
+            nx = avg_dy
+            ny = -avg_dx
+
+            # Outer border (full offset)
+            outer_x = p1[0] + nx * outer_width
+            outer_y = p1[1] + ny * outer_width
+            outer_border.append((outer_x, outer_y))
+
+            # Inner border (smaller offset inward)
+            inner_x = p1[0] - nx * inner_width
+            inner_y = p1[1] - ny * inner_width
+            inner_border.append((inner_x, inner_y))
+
+        return inner_border, outer_border
+
+
+    def get_items(self,track_name, outer_width=50, inner_width=10,
+                  screen_width=800, screen_height=600):
+        """Load track geometry from track name or geojson file."""
+        if track_name == "simple" or track_name == "square":
+            gates_per_segment = 1
+            inner_width = 10
+            outer_width = 45
+            corner_radius = 140 if track_name == "simple" else 60
+            centerline = self.generate_simple_track(
+                screen_width,
+                screen_height,
+                width=600,
+                height=400,
+                corner_points=6,
+                corner_radius=corner_radius
+            )
+
+            # Remove duplicate closure point before offsetting to avoid degenerate segments.
+            if len(centerline) > 1 and np.allclose(centerline[0], centerline[-1]):
+                centerline = centerline[:-1]
+
+            track_borders = self.offset_track_borders(
+                centerline,
+                outer_width=outer_width,
+                inner_width=inner_width
+            )
+            # Close loops without destroying the first vertex.
+            track_borders[0][-1] = track_borders[0][0]  # inner_border
+            track_borders[1][-1] = track_borders[1][0]  # outer_border
+
+        elif track_name == "square_narrow":
+            gates_per_segment = 1
+            inner_width = 7.5
+            outer_width = 42.5
+            corner_radius = 25
+            centerline = self.generate_simple_track(
+                screen_width,
+                screen_height,
+                width=600,
+                height=400,
+                corner_points=5,
+                corner_radius=corner_radius
+            )
+
+             # Remove duplicate closure point before offsetting to avoid degenerate segments.
+            if len(centerline) > 1 and np.allclose(centerline[0], centerline[-1]):
+                centerline = centerline[:-1]
+
+            track_borders = self.offset_track_borders(
+                centerline,
+                outer_width=outer_width,
+                inner_width=inner_width
+            )
+            # Close loops without destroying the first vertex.
+            track_borders[0][-1] = track_borders[0][0]  # inner_border
+            track_borders[1][-1] = track_borders[1][0]  # outer_border
+
+        else:
+            gates_per_segment = 1
+            # Load custom track from geojson file
+            import os
+            track_path = track_name if os.path.isabs(track_name) else os.path.join(os.path.dirname(__file__), f"{track_name}.geojson")
+            scaled_coords = self.load_track(
+                track_path,
+                canvas_width=screen_width,
+                canvas_height=screen_height,
+                padding=100
+            )
+
+            if len(scaled_coords) > 1 and np.allclose(scaled_coords[0], scaled_coords[-1]):
+                scaled_coords = scaled_coords[:-1]
+
+            track_borders = self.offset_track_borders(
+                scaled_coords,
+                outer_width=outer_width,
+                inner_width=inner_width
+            )
+
+        centerline = self.compute_centerline(
+            track_borders[0],
+            track_borders[1]
+        )
+
+        gates = self.generate_gates(
+            centerline,
+            track_width=inner_width + outer_width,
+            gates_per_segment=gates_per_segment
+        )
+
+        return track_borders[0], track_borders[1], gates
+    
+    def compute_centerline(self, inner_border, outer_border):
+        """
+        Compute the centerline of a track given the inner and outer borders.
+
+        inner_border, outer_border: lists of (x, y) points of same length
+        Returns: list of (x, y) points representing the centerline
+        """
+        if len(inner_border) != len(outer_border):
+            raise ValueError("Inner and outer borders must have the same number of points")
+
+        centerline = []
+        for (ix, iy), (ox, oy) in zip(inner_border, outer_border):
+            cx = (ix + ox) / 2
+            cy = (iy + oy) / 2
+            centerline.append((cx, cy))
+
+        return centerline
+
+    def generate_gates(self, centerline, track_width, gates_per_segment=1):
+        """
+        Generate gates along the track.
+
+        centerline: list of (x, y) points along the track
+        track_width: full width of the track (distance from inner to outer border)
+        gates_per_segment: number of gates per segment between two centerline points
+
+        Returns: list of gates as (x1, y1, x2, y2)
+        """
+        gates = []
+        n = len(centerline)
+
+        for i in range(n):
+            p1 = np.array(centerline[i])
+            p2 = np.array(centerline[(i + 1) % n])  # wrap around for closed track
+
+            # direction along track segment
+            dir_vec = p2 - p1
+            length = np.linalg.norm(dir_vec)
+            if length == 0:
+                continue
+            dir_vec /= length
+
+            # perpendicular direction
+            normal = np.array([-dir_vec[1], dir_vec[0]])
+            half_width = track_width / 2
+
+            # create gates along this segment
+            for j in range(gates_per_segment):
+                t = (j + 0.5) / gates_per_segment  # fractional position along segment
+                point = p1 + dir_vec * length * t
+                gate_start = point + normal * half_width
+                gate_end = point - normal * half_width
+                gates.append((gate_start[0], gate_start[1], gate_end[0], gate_end[1]))
+
+        return gates
+
+
+    def load_track(self, geojson_path, canvas_width=800, canvas_height=600, padding=50):
+        # Load GeoJSON
+        gdf = gpd.read_file(geojson_path)
+        track_line = gdf.geometry.iloc[0]
+        coords = list(track_line.coords)
+
+        # Extract longitudes and latitudes
+        lons, lats = zip(*coords)
+        min_lon, max_lon = min(lons), max(lons)
+        min_lat, max_lat = min(lats), max(lats)
+
+        # Compute scale factors
+        scale_x = (canvas_width - 2*padding) / (max_lon - min_lon)
+        scale_y = (canvas_height - 2*padding) / (max_lat - min_lat)
+
+        # Use the smaller scale to keep aspect ratio
+        scale = min(scale_x, scale_y)
+
+        # Apply scaling and add padding
+        scaled_coords = [
+            (
+                padding + (lon - min_lon) * scale,
+                canvas_height - (padding + (lat - min_lat) * scale)  # flip Y-axis
+            )
+            for lon, lat in coords
+        ]
+
+        return scaled_coords

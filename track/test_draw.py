@@ -1,7 +1,7 @@
 import tkinter as tk
 import cv2  # type: ignore
 import numpy as np
-from track import Track 
+from Race.track.track import Track 
 
 
 def build_distance_field_image(track):
