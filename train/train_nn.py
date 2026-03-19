@@ -3,7 +3,7 @@ import torch.optim as optim
 from torch.distributions import Normal
 
 from tqdm import tqdm, trange
-from Race.track import Track
+from track import Track
 import os
 import sys
 
@@ -22,7 +22,7 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 if CURRENT_DIR not in sys.path:
     sys.path.append(CURRENT_DIR)
 
-from Race.utils.plot_rewards import RewardPlotter
+from utils import RewardPlotter
 
 CHECKPOINT_PATH = "last_ckpt.pth"
 
