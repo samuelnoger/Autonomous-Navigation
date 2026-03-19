@@ -1,8 +1,8 @@
 import tkinter as tk
 import torch
-from Race.model.model import CarState, CarNet, GRUCarNet  # your trained model classes
-from Race.model.model_variants import LSTMCarNet, SeparateHeadsCarNet, DeepCarNet, AttentionCarNet  # Import all variants
-from Race.track.track import Track  # your Track class
+from Race.model import CarState, CarNet # your trained model classes
+from Race.model import LSTMCarNet, SeparateHeadsCarNet, DeepCarNet, AttentionCarNet  # Import all variants
+from Race.track import Track  # your Track class
 from Race.utils.my_utils import get_inputs  # function to compute NN inputs from track and car state
 from Race.utils.arguments import args_nn  # argument parser for simulation parameters
 
