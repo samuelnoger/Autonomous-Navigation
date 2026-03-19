@@ -1,28 +1,14 @@
 import torch
 import torch.optim as optim
 from torch.distributions import Normal
+import os
 
 from tqdm import tqdm, trange
+
+# Relative imports from parent directory (Race/)
 from track import Track
-import os
-import sys
-
-# Model imports (make sure model.py and model_variants.py are in the same directory and importable)
-from model import CarState
-from model import CarNet
-from model import GRUCarNet 
-from model import LSTMCarNet
-
-# Utils imports (make sure utils.py is in the same directory and importable)
-from utils import compute_step_reward
-from utils import get_inputs
-from utils import args_nn
-
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-if CURRENT_DIR not in sys.path:
-    sys.path.append(CURRENT_DIR)
-
-from utils import RewardPlotter
+from model import CarState, CarNet, GRUCarNet, LSTMCarNet
+from utils import compute_step_reward, get_inputs, args_nn, RewardPlotter
 
 CHECKPOINT_PATH = "last_ckpt.pth"
 
@@ -217,12 +203,11 @@ def train_model(
                 step_rewards_total[step] = reward
 
                 # Store in buffer
-                for k, v in step_rewards.items():
-                    rewards_buffer[k][step] = v
+                for k in step_rewards:
+                    rewards_buffer[k][step] = step_rewards[k]
 
-                active_count = cars.active.sum().item()  # number of active cars
-
-                if step % 10 == 0:
+                if step % 20 == 0:
+                    active_count = cars.active.sum().item()  # number of active cars
                     step_bar.set_postfix(active_cars=f"{active_count}/{n_cars}")
 
             # Compute returns (cumulative rewards)
