@@ -464,7 +464,7 @@ def main():
         saved_epoch = checkpoint["epoch"]
 
         # Handle different resume modes
-        if args.start_mode == "start_new":
+        if args.start_mode == "restart":
             # Start new training but keep loaded weights
             start_epoch = 0
             best_reward = -float("inf")
@@ -491,7 +491,7 @@ def main():
 
         resumed_lr = optimizer.param_groups[0]["lr"]
         print(f"Resuming training from epoch {start_epoch} with learning rate {resumed_lr:.2e}...")
-        if args.start_mode == "resume" and best_reward > -float("inf"):
+        if args.start_mode == "continue" and best_reward > -float("inf"):
             print(f"Best reward so far: {best_reward:.2f}")
 
     else:

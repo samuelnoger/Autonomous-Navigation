@@ -20,7 +20,7 @@ def args_nn():
     parser.add_argument("--disable_lr_scheduler",action="store_true",help="Disable automatic learning-rate reduction on plateaus",)
     parser.add_argument("--force_lr", action="store_true", help="Force learning rate to --lr even when resuming from checkpoint")
     parser.add_argument("--ray_method", type=str, default="sphere", choices=["sphere", "line"], help="Ray casting method: 'sphere' (distance field) or 'line' (segment intersection)")
-    parser.add_argument("--start_mode", type=str, default="resume", choices=["resume", "start_new"], help="'resume' to continue from last epoch, 'start_new' to start from epoch 0 even if checkpoint exists.")
+    parser.add_argument("--start_mode", type=str, default="continue", choices=["continue", "restart"], help="'continue' to continue from last epoch, 'start_new' to start from epoch 0 even if checkpoint exists.")
     parser.add_argument("--max_ray_dist", type=float, default=200.0, help="Maximum distance for ray inputs (for normalization)")
     parser.add_argument("--steer_smooth_alpha", type=float, default=0.0, help="Steering smoothing factor (0 disables smoothing)")
     parser.add_argument("--model", type=str, default="gru", choices=["gru", "lstm", "carnet"], help="Model type to train: 'gru', 'lstm', or 'carnet'")
