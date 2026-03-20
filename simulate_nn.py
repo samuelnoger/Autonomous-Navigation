@@ -19,7 +19,7 @@ MAX_RENDER_FPS = 60  # optional cap on rendering speed
 # Tkinter visualization
 # -----------------------------
 class Simulation:
-    
+
     def __init__(self, track, model, n_cars=1, n_rays=13, start_idx=0, device="cpu", max_ray_dist=500, steer_smooth_alpha=0.6):
         self.track = track
         self.model = model.to(device)

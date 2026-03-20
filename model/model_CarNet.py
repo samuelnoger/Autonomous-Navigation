@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import math
 
 
@@ -182,10 +181,8 @@ class CarState:
         # ============================================================================
         # STEERING: Rate limiting + speed-dependent response
         # ============================================================================
-        # Prevent instantaneous steering reversals (steering inertia)
-        steering_delta = torch.clamp(steering - self.prev_steer, -max_steering_rate, max_steering_rate)
-        steering = self.prev_steer + steering_delta
-        self.prev_steer = steering
+        if steer_smooth_alpha is not None:
+            steering = steering * (1.0 - self.steer_smooth_alpha) + self.prev_steer * self.steer_smooth_alpha
 
         # At high speeds, reduce steering authority (can't turn as sharply)
         speed_normalized = self.speed / max_speed
