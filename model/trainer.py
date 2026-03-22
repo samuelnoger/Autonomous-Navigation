@@ -154,7 +154,7 @@ class Trainer:
 
         # Reward rates (tunable hyperparameters)
         speed_reward_rate = 0.005
-        collision_penalty_rate = 50
+        collision_penalty_rate = 50.0
         gate_pass_reward_rate = 2.0
         wall_penalty_rate = 5.0
         direction_reward_rate = 0.01
@@ -162,7 +162,7 @@ class Trainer:
 
         # Track-specific tuning
         if self.track.track_name == "simple":
-            collision_penalty_rate = 50.0
+            collision_penalty_rate = 100.0
             gate_pass_reward_rate = 15.0
             direction_reward_rate = 0.02
 
@@ -446,8 +446,8 @@ class Trainer:
         try:
             for epoch in epoch_bar:
                 # Reset cars for new epoch
-                cars.reset(track=self.track, start_idx=self.track_start_idx, epoch=epoch)
-
+                cars.reset(track=self.track, start_idx=self.track_start_idx, epoch=None)
+                
                 # Reset gate tracking
                 gate_indices.fill_(self.track_start_idx)
                 # For reverse cars, move one step in their direction so they aim at the correct next gate

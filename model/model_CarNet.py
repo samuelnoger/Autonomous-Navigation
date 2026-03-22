@@ -6,7 +6,6 @@ import math
 class CarNet(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, n_rays):
         super().__init__()
-
         self.n_rays = n_rays
         state_dim = input_dim - n_rays  # remaining inputs (speed, heading, etc.)
 
@@ -83,14 +82,19 @@ class CarState:
         # Track previous slip state for velocity projection on grip recovery
         self.was_slipping = torch.zeros(n_cars, dtype=torch.bool, device=device)
 
+        # Driving direction per car: 1 for forward, -1 for reverse
+        self.direction = torch.ones(n_cars, dtype=torch.int64, device=device)
+
         self.max_speed = 140.0
         self.accel_rate = 5.0
         self.friction = 0.02
         self.drift_factor = 0.5  # Velocity lag: 0 = instant, 1 = no effect
         self.wheelbase = 15.0
         self.max_steering_angle = math.pi / 4
-        self.max_grip_accel = 15.0
-        self.max_steering_rate = 0.1  # Max steering change per frame (prevents instant left-right switching) 
+        self.max_grip_accel = 20.0
+        self.max_steering_rate = 0.1  # Max steering change per frame (prevents instant left-right switching)
+        self.enter_threshold = 1.0
+        self.exit_threshold = 0.75
 
     def reset(self, track, start_idx, epoch):
         """Reset car positions and velocities for a new episode.
@@ -141,18 +145,21 @@ class CarState:
             torch.rand(self.n_cars, device=device) - 0.5
         ) * 0.25  # +/-0.2 rad random spread
 
-        # --- Assign directions: balanced half forward / half reverse ---
-        # Avoid alternating the whole batch each epoch (causes reward oscillation).
+        # --- Assign directions: alternate based on epoch for simulation, randomize for training ---
         n = self.n_cars
-        half = n // 2
-        dir_tensor = torch.ones(n, dtype=torch.int, device=device)
-        # first half -> forward (1), next half -> reverse (-1)
-        dir_tensor[:half] = 1
-        dir_tensor[half: half * 2] = -1
-        if n % 2 == 1:
-            # randomize leftover car direction
-            dir_tensor[-1] = -1 if torch.rand(1, device=device) < 0.5 else 1
-        self.direction = dir_tensor
+        if epoch is not None:
+            # Simulation mode: alternate direction each epoch
+            dir_value = 1 if epoch % 2 == 0 else -1
+            self.direction.fill_(dir_value)
+        else:
+            # Training mode: balanced half forward / half reverse
+            half = n // 2
+            dir_tensor = torch.ones(n, dtype=torch.int, device=device)
+            dir_tensor[half: half * 2] = -1
+            if n % 2 == 1:
+                # randomize leftover car direction
+                dir_tensor[-1] = -1 if torch.rand(1, device=device) < 0.5 else 1
+            self.direction = dir_tensor
 
         self.pos = start_pos
         # Flip angle by 180° for reverse cars
@@ -192,11 +199,9 @@ class CarState:
         drift_factor = self.drift_factor
         wheelbase = self.wheelbase
         max_steering_angle = self.max_steering_angle
-        max_steering_rate = self.max_steering_rate
         max_grip_accel = self.max_grip_accel
 
         self.prev_pos = self.pos.clone()
-
         # ============================================================================
         # STEERING: Rate limiting + speed-dependent response
         # ============================================================================
@@ -221,15 +226,13 @@ class CarState:
         # ============================================================================
         # Turning radius from steering angle: r = wheelbase / tan(angle)
         turning_radius = wheelbase / torch.tan(steering_angle.abs())
-
         # Angular velocity: ω = v / r (how fast the car rotates)
         steering_sign = torch.sign(steering_angle)
         steering_sign = torch.where(steering_sign == 0, torch.ones_like(steering_sign), steering_sign)
         angular_velocity = (self.speed / (turning_radius + 1e-6)) * steering_sign
-
         # Update heading angle
         self.angle = self.angle + angular_velocity * dt
-
+        
         # Current velocity direction
         heading = torch.stack([torch.cos(self.angle), torch.sin(self.angle)], dim=1)
         ideal_velocity = heading * self.speed.unsqueeze(1)
@@ -242,45 +245,49 @@ class CarState:
 
         # How much we exceed available grip (0 = no slip, >1 = heavy slip)
         slip_ratio = torch.clamp(centripetal_accel / max_grip_accel, 0.0, 2.0)
-        slip_mask = slip_ratio > 1.0
-        fullsteer_mask = slip_ratio <= 1.0
+        slip_mask = slip_ratio > self.enter_threshold
+        fullsteer_mask = slip_ratio <= self.enter_threshold
+        
+        slip_mask[self.was_slipping] = slip_ratio[self.was_slipping] > self.exit_threshold
+        fullsteer_mask[self.was_slipping] = slip_ratio[self.was_slipping] <= self.exit_threshold
 
         # Speed loss from drifting (lateral friction during oversteer)
         slip_excess = (slip_ratio - 1.0).clamp(min=0.0)
-        drift_friction_factor = 1.0  # Tunable: higher = more speed loss while drifting
+        drift_friction_factor = 7.5  # Tunable: higher = more speed loss while drifting
         self.speed[slip_mask] = self.speed[slip_mask] * (1.0 - slip_excess[slip_mask] * drift_friction_factor * dt)
 
         # Recompute ideal velocity with the new (lower) speed from drift friction
         ideal_velocity = heading * self.speed.unsqueeze(1)
+
+        # ============================================================================
+        # VELOCITY PROJECTION: When recovering from drift to grip
+        # ============================================================================
+        # Detect cars that just recovered grip (were slipping, now have grip)
+        # Must do this BEFORE updating self.vel, so we project the actual drifted velocity
+        just_recovered_grip = self.was_slipping & fullsteer_mask
+
+        if just_recovered_grip.any():
+            # Project drifting velocity onto heading direction
+            # heading is a unit vector, so we get the component of velocity pointing forward
+            vel_drifted = self.vel[just_recovered_grip]
+            heading_recovered = heading[just_recovered_grip]
+
+            # Forward component: dot product of velocity with heading direction
+            # If sideways drift (perpendicular to heading): forward_component ≈ 0
+            # If aligned drift: forward_component ≈ ||vel||
+            vel_norm = torch.norm(vel_drifted, dim=1, keepdim=True)
+            forward_component = (vel_drifted * heading_recovered).sum(dim=1, keepdim=True) / (vel_norm + 1e-6)
+            forward_component = torch.clamp(forward_component, 0.0, 1.0)
+
+            # Apply grip recovery penalty: new_velocity = heading * vel_norm * forward_component * penalty
+            grip_recovery_penalty = 0.75
+            ideal_velocity[just_recovered_grip] = heading_recovered * vel_norm * forward_component * grip_recovery_penalty
 
         # Update velocity:
         # - Within grip: velocity snaps to ideal heading instantly
         # - While slipping: velocity lags behind heading (smooth drift effect)
         self.vel[slip_mask] = self.vel[slip_mask]*(1 - drift_factor*dt) + ideal_velocity[slip_mask]*drift_factor*dt
         self.vel[fullsteer_mask] = ideal_velocity[fullsteer_mask]
-
-        # ============================================================================
-        # VELOCITY PROJECTION: When recovering from drift to grip
-        # ============================================================================
-        # Detect cars that just recovered grip (were slipping, now have grip)
-        just_recovered_grip = self.was_slipping & fullsteer_mask
-
-        if just_recovered_grip.any():
-            # Project velocity onto heading direction for recovered cars
-            # This prevents instant sideways-to-forward conversion unrealistically
-            vel_recovered = self.vel[just_recovered_grip]
-            heading_recovered = heading[just_recovered_grip]
-
-            # Forward component: dot product of velocity with heading direction
-            # If sideways drift (90°): forward_component ≈ 0 → loses all speed
-            # If angled drift: keeps proportional speed based on angle
-            forward_component = (vel_recovered * heading_recovered).sum(dim=1, keepdim=True)
-            forward_component = torch.clamp(forward_component, 0.0, 1.0)
-
-            # Project: new_velocity = heading * speed * forward_component * grip_recovery_penalty
-            # Additional penalty for catching grip after drifting (extra friction/energy loss)
-            grip_recovery_penalty = 0.75
-            self.vel[just_recovered_grip] = heading_recovered * self.speed[just_recovered_grip].unsqueeze(1) * forward_component * grip_recovery_penalty
 
         # Update slip state for next frame
         self.was_slipping = slip_mask.clone()
