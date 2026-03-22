@@ -2,6 +2,41 @@ import torch
 import math
 import numpy as np
 
+def save_checkpoint(
+    epoch,
+    model,
+    optimizer,
+    checkpoint_path="checkpoints/last_ckpt.pth",
+    total_epochs=None,
+    scheduler=None,
+    best_reward=-float("inf"),
+):
+    """Save model and optimizer state for checkpoint resuming.
+
+    Saves model weights, optimizer state, learning rate scheduler state,
+    and training metadata needed to resume training from this epoch.
+
+    Args:
+        epoch: Current epoch number.
+        model: Model with state to save.
+        optimizer: Optimizer with state to save.
+        checkpoint_path: Where to save the checkpoint.
+        total_epochs: Total number of epochs planned for training.
+        scheduler: Optional LR scheduler with state to save.
+        best_reward: Best reward achieved so far.
+    """
+    torch.save(
+        {
+            "epoch": epoch,
+            "total_epochs": total_epochs,
+            "model_state": model.state_dict(),
+            "optimizer_state": optimizer.state_dict(),
+            "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
+            "current_lr": optimizer.param_groups[0]["lr"],
+            "best_reward": best_reward,
+        },
+        checkpoint_path,
+    )
             
 def passed_gate(car, gate_line, threshold=15):
     x1, y1, x2, y2 = gate_line
@@ -88,8 +123,6 @@ def get_inputs(track, cars, next_gate_centers, max_ray_dist=200.0, gates_tensor=
     # ---- Ray distances ----
     ray_angles = cars.ray_angles  # (N,R)
     ray_dists_original = track.get_lines_along_rays(cars.pos, ray_angles, max_ray_dist)  # (N,R)
-    # Log-scale normalization: amplifies close-range signals (near walls) while allowing far lookahead
-    # Maps: 0 → 0, 30 → 0.55, 500 → 1.0
     ray_dists = ray_dists_original / max_ray_dist
 
     # ---- Heading error to next gate ----
@@ -115,7 +148,7 @@ def get_inputs(track, cars, next_gate_centers, max_ray_dist=200.0, gates_tensor=
         n_gates = gates_tensor.shape[0]
         for lookahead in [1, 2, 3]:
             curr_idx = gate_indices
-            next_idx = (gate_indices + lookahead) % n_gates
+            next_idx = (gate_indices + lookahead * cars.direction) % n_gates  # Account for driving direction
 
             # Extract gate vectors and compute direction vectors
             # direction = R(+90) * gate_vec / ||gate_vec|| = (-(y2-y1), x2-x1) / norm
@@ -217,17 +250,16 @@ def compute_step_reward(
     # Gate passing: reward cars that passed through the gate this step
     passed_mask = (
         (dist < 10.0)
-        & (gate_indices == (last_gate_indices + 1) % track.gates.shape[0])
+        & (gate_indices == (last_gate_indices + cars.direction) % track.gates.shape[0])
         & cars.active
     )
-    cars.gates_passed[passed_mask] += 1
     gate_reward = torch.zeros_like(speed)
-    gate_reward[passed_mask] = gate_pass_reward_rate
-
     with torch.no_grad():
+        cars.gates_passed[passed_mask] += cars.direction[passed_mask]  # Increment or decrement based on direction
+        gate_reward[passed_mask] = gate_pass_reward_rate
         last_gate_indices[passed_mask] = gate_indices[passed_mask]
         gate_indices[passed_mask] = (
-            gate_indices[passed_mask] + 1
+            gate_indices[passed_mask] + cars.direction[passed_mask]
         ) % gates_tensor.shape[0]
 
     prev_active = cars.active.clone()

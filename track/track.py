@@ -2,7 +2,7 @@ import torch
 import math
 import numpy as np
 import cv2 # type: ignore
-from utils.my_utils import line_intersection
+from utils import line_intersection, generate_simple_track
 import geopandas as gpd # type: ignore
 
 class Track:
@@ -330,7 +330,7 @@ class Track:
             inner_width = 10
             outer_width = 45
             corner_radius = 140 if track_name == "simple" else 60
-            centerline = self.generate_simple_track(
+            centerline = generate_simple_track(
                 screen_width,
                 screen_height,
                 width=600,

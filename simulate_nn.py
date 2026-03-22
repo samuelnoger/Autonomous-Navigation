@@ -3,8 +3,8 @@ import torch
 from model import CarState, CarNet # your trained model classes
 from model import LSTMCarNet,GRUCarNet, SeparateHeadsCarNet, DeepCarNet, AttentionCarNet  # Import all variants
 from track import Track  # your Track class
-from utils.my_utils import get_inputs  # function to compute NN inputs from track and car state
-from utils.arguments import args_nn  # argument parser for simulation parameters
+from utils import get_inputs  # function to compute NN inputs from track and car state
+from utils import args_nn  # argument parser for simulation parameters
 
 # -----------------------------
 # Simulation parameters
@@ -30,6 +30,7 @@ class Simulation:
         self.steer_smooth_alpha = steer_smooth_alpha
         self.start_idx = start_idx
         self.timestep = 0
+        self.epoch = 0
 
         # Initialize LSTM hidden state if using LSTM model
         self.hidden = None
@@ -55,9 +56,13 @@ class Simulation:
                 self.canvas.create_line(x1, y1, x2, y2, fill="black", width=2)
             )
 
+        # Draw gates and store references
+        self.gate_lines = []
         for gate in track.gates:
             x1, y1, x2, y2 = gate.tolist()
-            self.canvas.create_line(x1, y1, x2, y2, fill="green", dash=(4, 2), width=1)
+            self.gate_lines.append(
+                self.canvas.create_line(x1, y1, x2, y2, fill="green", dash=(4, 2), width=1)
+            )
 
         # Car rectangles
         self.car_rects = []
@@ -73,8 +78,10 @@ class Simulation:
         self.root.mainloop()
 
     def _reset_cars(self):
-        self.cars.reset(self.track, self.start_idx)
+        self.cars.reset(self.track, self.start_idx, self.epoch) 
         self.gate_indices.fill_(self.start_idx)
+        # For reverse cars, move one step in their direction so they aim at the correct next gate
+        self.gate_indices = (self.gate_indices + self.cars.direction) % self.gates_tensor.shape[0]
         if hasattr(self.cars, "prev_steer"):
             self.cars.prev_steer.zero_()
         # Reset LSTM hidden state when resetting cars
@@ -83,6 +90,7 @@ class Simulation:
 
     def on_restart(self, _event=None):
         self.timestep = 0
+        self.epoch += 1
         self._reset_cars()
 
     # Helper: rectangle corners based on position and angle
@@ -145,7 +153,7 @@ class Simulation:
             closest = torch.stack([gx1, gy1], dim=1) + u.unsqueeze(1) * line_vec
             dist_to_gate = (self.cars.pos - closest).norm(dim=1)
             passed = dist_to_gate < 10.0
-            self.gate_indices[passed] = (self.gate_indices[passed] + 1) % self.gates_tensor.shape[0]
+            self.gate_indices[passed] = (self.gate_indices[passed] + self.cars.direction[passed]) % self.gates_tensor.shape[0]
 
         # Recompute rays for the updated car state so drawn rays match current car positions.
         _, ray_dists_viz = get_inputs(
@@ -190,6 +198,11 @@ class Simulation:
         self.canvas.create_text(
             50, 50, text="Timestep:" + str(self.timestep), fill="black", tags="text"
         )
+
+        # Update gate colors: current gate is red, others are green
+        for gate_idx, line_obj in enumerate(self.gate_lines):
+            color = "red" if gate_idx == self.gate_indices[0].item() else "green"
+            self.canvas.itemconfig(line_obj, fill=color)
 
         if self.n_cars == 1:
             steer_val = steer[0].item()
