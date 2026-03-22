@@ -93,73 +93,55 @@ def generate_simple_track(screen_width=1000, screen_height=600,
 
     return centerline
 
-def get_inputs(track, cars, next_gate_centers, max_ray_dist=200.0, gates_tensor=None, gate_indices=None):
-    """Compute neural network inputs from track and car state.
+def get_inputs(cars,track, gates_tensor, gate_indices, max_ray_dist):
+        """Get neural network inputs for all cars.
 
-    Returns NN inputs per car:
-    - Ray distances (log-normalized for features)
-    - Speed (normalized)
-    - sin(heading_error)
-    - cos(heading_error)
-    - Distance to next gate (normalized)
-    - Min ray distance (wall proximity)
-    - Lookahead curvatures (gates 1, 2, 3 ahead)
+        Computes ray distances, heading error, speed, curvature lookahead, etc.
 
-    Args:
-        track: Track object
-        cars: CarState object
-        next_gate_centers: (N,2) tensor with gate centers
-        max_ray_dist: max distance for rays (default 200)
-        gates_tensor: (n_gates, 4) tensor of gate coordinates [optional for curvature]
-        gate_indices: (N,) tensor of current gate indices [optional for curvature]
+        Args:
+            cars: CarState object.
+            gates_tensor: Tensor containing gate coordinates.
+            gate_indices: Current gate indices for all cars.
 
-    Returns:
-        inputs: (N, n_rays+6+curvature) tensor with log-normalized ray features and other inputs
-        ray_dists: (N, n_rays) tensor of original ray distances in pixels
-    """
-    N = cars.pos.shape[0]
-    device = cars.pos.device
+        Returns:
+            inputs: Model input tensor (N, input_dim).
+            ray_dists: Ray distances for reward computation (N, n_rays).
+        """
+        # Compute next gate centers
+        next_gate_centers = (
+            gates_tensor[gate_indices, 0:2] + gates_tensor[gate_indices, 2:4]
+        ) / 2
 
-    # ---- Ray distances ----
-    ray_angles = cars.ray_angles  # (N,R)
-    ray_dists_original = track.get_lines_along_rays(cars.pos, ray_angles, max_ray_dist)  # (N,R)
-    ray_dists = ray_dists_original / max_ray_dist
+        # ---- Ray distances ----
+        ray_angles = cars.ray_angles  # (N, R)
+        ray_dists_original = track.get_lines_along_rays(
+            cars.pos, ray_angles, max_ray_dist
+        )  # (N, R)
+        ray_dists = ray_dists_original / max_ray_dist
 
-    # ---- Heading error to next gate ----
-    delta = next_gate_centers - cars.pos  # (N,2)
-    target_angle = torch.atan2(delta[:, 1], delta[:, 0])
-    heading_error = target_angle - cars.angle
-    heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
-    sin_error = torch.sin(heading_error)
-    cos_error = torch.cos(heading_error)
+        # ---- Heading error to next gate ----
+        delta = next_gate_centers - cars.pos  # (N, 2)
+        target_angle = torch.atan2(delta[:, 1], delta[:, 0])
+        heading_error = target_angle - cars.angle
+        heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
+        sin_error = torch.sin(heading_error)
+        cos_error = torch.cos(heading_error)
 
-    # ---- Speed input (normalize) ----
-    speed_input = cars.speed.unsqueeze(1) / 140.0
+        # ---- Speed input (normalize) ----
+        speed_input = cars.speed.unsqueeze(1) / 140.0
 
-    # ---- Distance to next gate (normalized) ----
-    dist_to_gate = delta.norm(dim=1, keepdim=True) / 200.0  # normalize by typical gate distance
+        # ---- Lookahead curvature (gates 1, 2, 3 ahead) ----
+        # Compute car's heading direction
+        car_heading_x = torch.cos(cars.angle)
+        car_heading_y = torch.sin(cars.angle)
 
-    # ---- Min ray distance (wall proximity) ----
-    min_ray = ray_dists.min(dim=1, keepdim=True).values  # extract values tensor
-
-    # ---- Lookahead curvature (gates 1, 2, 3 ahead) ----
-    curvatures = []
-    if gates_tensor is not None and gate_indices is not None:
+        curvatures = []
         n_gates = gates_tensor.shape[0]
         for lookahead in [1, 2, 3]:
-            curr_idx = gate_indices
-            next_idx = (gate_indices + lookahead * cars.direction) % n_gates  # Account for driving direction
+            next_idx = (gate_indices + lookahead * cars.direction) % n_gates
 
-            # Extract gate vectors and compute direction vectors
-            # direction = R(+90) * gate_vec / ||gate_vec|| = (-(y2-y1), x2-x1) / norm
-            curr_gate = gates_tensor[curr_idx]  # (N, 4)
+            # Extract gate direction for upcoming gate
             next_gate = gates_tensor[next_idx]  # (N, 4)
-
-            curr_gx = curr_gate[:, 2] - curr_gate[:, 0]
-            curr_gy = curr_gate[:, 3] - curr_gate[:, 1]
-            curr_norm = torch.hypot(curr_gx, curr_gy)
-            curr_dir_x = -curr_gy / (curr_norm + 1e-6)
-            curr_dir_y = curr_gx / (curr_norm + 1e-6)
 
             next_gx = next_gate[:, 2] - next_gate[:, 0]
             next_gy = next_gate[:, 3] - next_gate[:, 1]
@@ -167,25 +149,32 @@ def get_inputs(track, cars, next_gate_centers, max_ray_dist=200.0, gates_tensor=
             next_dir_x = -next_gy / (next_norm + 1e-6)
             next_dir_y = next_gx / (next_norm + 1e-6)
 
-            # Curvature: angle between current and next gate directions
-            cos_curv = curr_dir_x * next_dir_x + curr_dir_y * next_dir_y  # dot product
-            sin_curv = curr_dir_x * next_dir_y - curr_dir_y * next_dir_x  # cross product
+            # For reverse cars, flip gate direction since they traverse backwards
+            next_dir_x = next_dir_x * cars.direction
+            next_dir_y = next_dir_y * cars.direction
+
+            # Curvature: angle difference between car heading and next gate direction
+            # cos_curv: dot product = cos(angle)
+            # sin_curv: cross product = sin(angle)
+            cos_curv = car_heading_x * next_dir_x + car_heading_y * next_dir_y
+            sin_curv = car_heading_x * next_dir_y - car_heading_y * next_dir_x
 
             curvatures.append(cos_curv.unsqueeze(1))
             curvatures.append(sin_curv.unsqueeze(1))
 
-    # ---- Concatenate all features ----
-    feature_list = [
-        ray_dists,           # n_rays features
-        speed_input,         # 1 feature
-        sin_error.unsqueeze(1),  # 1 feature
-        cos_error.unsqueeze(1),  # 1 feature
-    ]
-    if curvatures:
+
+        # ---- Concatenate all features ----
+        feature_list = [
+            ray_dists,  # n_rays features
+            speed_input,  # 1 feature
+            sin_error.unsqueeze(1),  # 1 feature
+            cos_error.unsqueeze(1),  # 1 feature
+        ]
         feature_list.extend(curvatures)  # 6 features (3 gates * 2 for sin/cos)
 
-    inputs = torch.cat(feature_list, dim=1)
-    return inputs, ray_dists_original
+        inputs = torch.cat(feature_list, dim=1)
+        
+        return inputs, ray_dists_original
 
 
 def compute_step_reward(

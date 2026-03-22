@@ -147,6 +147,7 @@ class CarState:
 
         # --- Assign directions: alternate based on epoch for simulation, randomize for training ---
         n = self.n_cars
+        #self.direction = -torch.ones(n, dtype=torch.int64, device=device)
         if epoch is not None:
             # Simulation mode: alternate direction each epoch
             dir_value = 1 if epoch % 2 == 0 else -1

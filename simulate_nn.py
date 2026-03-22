@@ -1,9 +1,8 @@
 import tkinter as tk
 import torch
 from model import CarState, CarNet # your trained model classes
-from model import LSTMCarNet,GRUCarNet, SeparateHeadsCarNet, DeepCarNet, AttentionCarNet  # Import all variants
+from model import get_inputs  # function to compute NN inputs from car and track state
 from track import Track  # your Track class
-from utils import get_inputs  # function to compute NN inputs from track and car state
 from utils import args_nn  # argument parser for simulation parameters
 
 # -----------------------------
@@ -123,12 +122,7 @@ class Simulation:
             + self.gates_tensor[self.gate_indices, 2:4]
         ) / 2
         inputs, ray_dists = get_inputs(
-            self.track,
-            self.cars,
-            next_gate_centers=next_gate_centers,
-            max_ray_dist=self.max_ray_dist,
-            gates_tensor=self.gates_tensor,
-            gate_indices=self.gate_indices
+            self.cars, self.track, self.gates_tensor, self.gate_indices, self.max_ray_dist
         )
 
         with torch.no_grad():
@@ -156,14 +150,7 @@ class Simulation:
             self.gate_indices[passed] = (self.gate_indices[passed] + self.cars.direction[passed]) % self.gates_tensor.shape[0]
 
         # Recompute rays for the updated car state so drawn rays match current car positions.
-        _, ray_dists_viz = get_inputs(
-            self.track,
-            self.cars,
-            next_gate_centers=next_gate_centers,
-            max_ray_dist=self.max_ray_dist,
-            gates_tensor=self.gates_tensor,
-            gate_indices=self.gate_indices
-        )
+        _, ray_dists_viz = get_inputs(self.cars, self.track, self.gates_tensor, self.gate_indices, self.max_ray_dist)
         # ray_dists_viz are already in original units (pixels), no need to invert log normalization
         ray_lengths = ray_dists_viz
         ray_angles = self.cars.ray_angles  # [n_cars, n_rays]
@@ -233,15 +220,6 @@ class Simulation:
 # Model to simulate (change this variable to switch models)
 MODEL_NAME = "carnet"  # Options: "gru", "lstm", "carnet", "separate_heads", "deep", "attention"
 
-# Model class mapping
-MODEL_MAP = {
-    "gru": (GRUCarNet, "last_ckpt_GRUCarNet.pth"),
-    "lstm": (LSTMCarNet, "last_ckpt_LSTMCarNet.pth"),
-    "carnet": (CarNet, "last_ckpt_CarNet.pth"),
-    "separate_heads": (SeparateHeadsCarNet, "last_ckpt_SeparateHeadsCarNet.pth"),
-    "deep": (DeepCarNet, "last_ckpt_DeepCarNet.pth"),
-    "attention": (AttentionCarNet, "last_ckpt_AttentionCarNet.pth"),
-}
 
 if __name__ == "__main__":
     n_cars = 1
@@ -273,59 +251,15 @@ if __name__ == "__main__":
 
     track = Track(track_name, 1000, 600, device=device, ray_method=args.ray_method)
 
-    # Select model based on MODEL_NAME variable
-    if MODEL_NAME not in MODEL_MAP:
-        print(f"Error: MODEL_NAME='{MODEL_NAME}' not in {list(MODEL_MAP.keys())}")
-        exit(1)
-
-    model_class, default_checkpoint = MODEL_MAP[MODEL_NAME]
-
-    # Determine checkpoint path - prioritize MODEL_NAME over args.checkpoint
-    checkpoint_candidates = [
-        f"checkpoints/{default_checkpoint}",
-        default_checkpoint,
-    ]
-
-    checkpoint_path = None
-    for candidate in checkpoint_candidates:
-        if os.path.exists(candidate):
-            checkpoint_path = candidate
-            break
-
-    if not checkpoint_path:
-        print(f"Error: Could not find checkpoint for {MODEL_NAME}")
-        print(f"Tried: {checkpoint_candidates}")
-        exit(1)
-
+    checkpoint_path = f"/Users/samuelnoger/Programms/Drive_NN/checkpoints/last_ckpt_CarNet.pth"
     print(f"Using model: {MODEL_NAME}")
     print(f"Loading checkpoint from: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
-    # Create model
-    if MODEL_NAME == "gru":
-        model = model_class(
-            input_dim=args.input_dim,
-            hidden_dim=args.hidden_dim,
-            output_dim=args.output_dim,
-            n_rays=args.n_rays,
-            gru_layers=1
-        )
-    elif MODEL_NAME == "lstm":
-        model = model_class(
-            input_dim=args.input_dim,
-            hidden_dim=args.hidden_dim,
-            output_dim=args.output_dim,
-            n_rays=args.n_rays,
-            lstm_layers=1
-        )
-    else:
         # carnet, separate_heads, deep, attention
-        model = model_class(
-            input_dim=args.input_dim,
-            hidden_dim=args.hidden_dim,
-            output_dim=args.output_dim,
-            n_rays=args.n_rays
-        )
+    model = CarNet(
+        input_dim=args.input_dim, hidden_dim=args.hidden_dim, output_dim=args.output_dim, n_rays=args.n_rays 
+    ).to(device)
 
     model.load_state_dict(checkpoint["model_state"])
     model.eval()

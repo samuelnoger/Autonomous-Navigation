@@ -2,13 +2,13 @@
 
 # Configuration variables
 N_CARS=512
-N_EPOCHS=100
+N_EPOCHS=300
 N_STEPS=1000
-LR=1e-3
+LR=5e-4
 INPUT_DIM=26  # For 17 rays: 17 + 1(speed) + 2(heading) + 6(curvature)
 HIDDEN_DIM=128  # Increased from 64 to handle 17 rays (ray_out_dim = 16*17 = 272)
 OUTPUT_DIM=2
-TRACK="square"  # "simple", "square", "square_narrow" or "redbull_ring"
+TRACK="redbull_ring"  # "simple", "square", "square_narrow" or "redbull_ring"
 DEVICE="mps"  # or "cpu", "cuda", or leave empty for auto-detection
 CHECKPOINT="last_ckpt.pth"  # Will be saved as checkpoints/last_ckpt_{ModelName}.pth
 MULTI_TRACK=false  # set to true to train on both simple and square_narrow tracks
