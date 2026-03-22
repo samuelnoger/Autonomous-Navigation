@@ -85,16 +85,16 @@ class CarState:
         # Driving direction per car: 1 for forward, -1 for reverse
         self.direction = torch.ones(n_cars, dtype=torch.int64, device=device)
 
-        self.max_speed = 140.0
+        self.max_speed = 100.0
         self.accel_rate = 5.0
         self.friction = 0.02
-        self.drift_factor = 0.5  # Velocity lag: 0 = instant, 1 = no effect
+        self.drift_factor = 0.25  # Velocity lag: 0 = instant, 1 = no effect
         self.wheelbase = 15.0
         self.max_steering_angle = math.pi / 4
         self.max_grip_accel = 20.0
-        self.max_steering_rate = 0.1  # Max steering change per frame (prevents instant left-right switching)
+        self.max_steering_rate = 0.25  # Max steering change per frame (prevents instant left-right switching)
         self.enter_threshold = 1.0
-        self.exit_threshold = 0.75
+        self.exit_threshold = 0.05
 
     def reset(self, track, start_idx, epoch):
         """Reset car positions and velocities for a new episode.
@@ -211,7 +211,7 @@ class CarState:
 
         # At high speeds, reduce steering authority (can't turn as sharply)
         speed_normalized = self.speed / max_speed
-        steering_reduction = 1.0 - 0.8 * speed_normalized  # 40% steering at max speed
+        steering_reduction = 1.0 - 0.95*speed_normalized 
         effective_max_steering_angle = max_steering_angle * steering_reduction
         steering_angle = torch.clamp(steering, -1.0, 1.0) * effective_max_steering_angle
 
@@ -254,7 +254,7 @@ class CarState:
 
         # Speed loss from drifting (lateral friction during oversteer)
         slip_excess = (slip_ratio - 1.0).clamp(min=0.0)
-        drift_friction_factor = 7.5  # Tunable: higher = more speed loss while drifting
+        drift_friction_factor = 5  # Tunable: higher = more speed loss while drifting
         self.speed[slip_mask] = self.speed[slip_mask] * (1.0 - slip_excess[slip_mask] * drift_friction_factor * dt)
 
         # Recompute ideal velocity with the new (lower) speed from drift friction

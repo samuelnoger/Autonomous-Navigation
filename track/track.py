@@ -357,7 +357,7 @@ class Track:
             inner_width = 7.5
             outer_width = 42.5
             corner_radius = 25
-            centerline = self.generate_simple_track(
+            centerline = generate_simple_track(
                 screen_width,
                 screen_height,
                 width=600,
