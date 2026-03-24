@@ -22,5 +22,8 @@ def args_nn():
     parser.add_argument("--start_mode", type=str, default="start_new", choices=["continue", "start_new"], help="'continue' to continue from last epoch, 'start_new' to start from epoch 0 even if checkpoint exists.")
     parser.add_argument("--max_ray_dist", type=float, default=500.0, help="Maximum distance for ray inputs (for normalization)")
     parser.add_argument("--steer_smooth_alpha", type=float, default=0.8, help="Steering smoothing factor (0 disables smoothing)")
+    parser.add_argument("--tracks",nargs="+",type=str,default=None,help="Comma-separated list of track names to train sequentially, e.g. 'simple,square,triangle'")
+    parser.add_argument("--epochs", nargs="+", type=int, default=None, help="List of epoch counts matching --tracks, e.g. '100 150 200' or CSV '100,150'.")
+    parser.add_argument("--save_plot", type=str, default="reward_plot.png", help="Path to save the final reward plot image after training; set empty to disable saving.")
 
     return parser

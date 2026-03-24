@@ -10,6 +10,7 @@ def save_checkpoint(
     total_epochs=None,
     scheduler=None,
     best_reward=-float("inf"),
+    track_name=None,
 ):
     """Save model and optimizer state for checkpoint resuming.
 
@@ -28,6 +29,7 @@ def save_checkpoint(
     torch.save(
         {
             "epoch": epoch,
+            "track_name": track_name,
             "total_epochs": total_epochs,
             "model_state": model.state_dict(),
             "optimizer_state": optimizer.state_dict(),
@@ -52,6 +54,42 @@ def passed_gate(car, gate_line, threshold=15):
     dist = math.hypot(px - ix, py - iy)
     return dist < threshold
 
+def generate_triangle_track(screen_width=1000, screen_height=600,width=600, height=400, corner_points=5, corner_radius=60):
+
+    """
+    Generates a triangular track with rounded corners.
+
+    Returns:
+        centerline: list of (x, y) points
+    """
+    cx = screen_width / 2
+    cy = screen_height / 2
+
+    hw = width / 2
+    hh = height / 2
+
+    centerline = []
+
+    # corner radius
+    r = corner_radius
+
+    # triangle vertices
+    vertices = [
+        (cx, cy - hh + r,-3*np.pi/4, -np.pi/4),          # top vertex
+        (cx + hw - r, cy + hh - r,-np.pi/4,np.pi/2),     # bottom-right vertex
+        (cx - hw + r, cy + hh - r,np.pi/2,5*np.pi/4)     # bottom-left vertex
+    ]
+
+    for cx_c, cy_c, a0, a1 in vertices:
+        angles = np.linspace(a0, a1, corner_points)
+        for a in angles:
+            x = cx_c + r * np.cos(a)
+            y = cy_c + r * np.sin(a)
+            centerline.append((x, y))
+
+    centerline.append(centerline[0])
+
+    return centerline
 
 def generate_simple_track(screen_width=1000, screen_height=600,
                           width=600, height=400,
@@ -149,7 +187,6 @@ def get_inputs(cars,track, gates_tensor, gate_indices, max_ray_dist):
             next_dir_x = -next_gy / (next_norm + 1e-6)
             next_dir_y = next_gx / (next_norm + 1e-6)
 
-            # For reverse cars, flip gate direction since they traverse backwards
             next_dir_x = next_dir_x * cars.direction
             next_dir_y = next_dir_y * cars.direction
 

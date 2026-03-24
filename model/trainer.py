@@ -4,7 +4,7 @@ from torch.distributions import Normal
 from tqdm import tqdm, trange
 
 from model import CarState
-from utils import save_checkpoint,get_inputs, RewardPlotter
+from utils import save_checkpoint, RewardPlotter
 
 
 class Trainer:
@@ -51,16 +51,82 @@ class Trainer:
         self.track_name = track.track_name
 
     def get_inputs(self, cars, gate_indices):
-        """Compute neural network inputs from car states and track info.
+        """Get neural network inputs for all cars.
+
+        Computes ray distances, heading error, speed, curvature lookahead, etc.
 
         Args:
-            cars: CarState object containing positions, velocities, etc.
-            gate_indices: Current gate indices for each car.
+            cars: CarState object.
+            gate_indices: Current gate indices for all cars.
+
         Returns:
-            inputs: Tensor of shape (n_cars, input_dim) for the model.
-            ray_dists: Tensor of shape (n_cars, n_rays) with ray distances.
+            inputs: Model input tensor (N, input_dim).
+            ray_dists: Ray distances for reward computation (N, n_rays).
         """
-        return get_inputs(cars, self.track, self.gates_tensor, gate_indices, self.max_ray_dist)
+        # Compute next gate centers
+        next_gate_centers = (
+            self.gates_tensor[gate_indices, 0:2] + self.gates_tensor[gate_indices, 2:4]
+        ) / 2
+
+        # ---- Ray distances ----
+        ray_angles = cars.ray_angles  # (N, R)
+        ray_dists_original = self.track.get_lines_along_rays(
+            cars.pos, ray_angles, self.max_ray_dist
+        )  # (N, R)
+        ray_dists = ray_dists_original / self.max_ray_dist
+
+        # ---- Heading error to next gate ----
+        delta = next_gate_centers - cars.pos  # (N, 2)
+        target_angle = torch.atan2(delta[:, 1], delta[:, 0])
+        heading_error = target_angle - cars.angle
+        heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
+        sin_error = torch.sin(heading_error)
+        cos_error = torch.cos(heading_error)
+
+        # ---- Speed input (normalize) ----
+        speed_input = cars.speed.unsqueeze(1) / 140.0
+
+        # ---- Lookahead curvature (gates 1, 2, 3 ahead) ----
+        curvatures = []
+        n_gates = self.gates_tensor.shape[0]
+        for lookahead in [1, 2, 3]:
+            curr_idx = gate_indices
+            next_idx = (gate_indices + lookahead * cars.direction) % n_gates
+
+            # Extract gate vectors and compute direction vectors
+            curr_gate = self.gates_tensor[curr_idx]  # (N, 4)
+            next_gate = self.gates_tensor[next_idx]  # (N, 4)
+
+            curr_gx = curr_gate[:, 2] - curr_gate[:, 0]
+            curr_gy = curr_gate[:, 3] - curr_gate[:, 1]
+            curr_norm = torch.hypot(curr_gx, curr_gy)
+            curr_dir_x = -curr_gy / (curr_norm + 1e-6)
+            curr_dir_y = curr_gx / (curr_norm + 1e-6)
+
+            next_gx = next_gate[:, 2] - next_gate[:, 0]
+            next_gy = next_gate[:, 3] - next_gate[:, 1]
+            next_norm = torch.hypot(next_gx, next_gy)
+            next_dir_x = -next_gy / (next_norm + 1e-6)
+            next_dir_y = next_gx / (next_norm + 1e-6)
+
+            # Curvature: angle between current and next gate directions
+            cos_curv = curr_dir_x * next_dir_x + curr_dir_y * next_dir_y
+            sin_curv = (curr_dir_x * next_dir_y - curr_dir_y * next_dir_x) #* cars.direction
+
+            curvatures.append(cos_curv.unsqueeze(1))
+            curvatures.append(sin_curv.unsqueeze(1))
+
+        # ---- Concatenate all features ----
+        feature_list = [
+            ray_dists,  # n_rays features
+            speed_input,  # 1 feature
+            sin_error.unsqueeze(1),  # 1 feature
+            cos_error.unsqueeze(1),  # 1 feature
+        ]
+        feature_list.extend(curvatures)  # 6 features (3 gates * 2 for sin/cos)
+
+        inputs = torch.cat(feature_list, dim=1)
+        return inputs, ray_dists_original
 
     def compute_rewards(
         self, cars, gate_indices, last_gate_indices, ray_dists, prev_dist, step, n_steps
@@ -88,16 +154,21 @@ class Trainer:
 
         # Reward rates (tunable hyperparameters)
         speed_reward_rate = 0.005
-        collision_penalty_rate = 50.0
+        collision_penalty_rate = 20.0
         gate_pass_reward_rate = 2.0
-        wall_penalty_rate = 5.0
+        wall_penalty_rate = 1.0
         direction_reward_rate = 0.01
-        alive_reward_rate = 0.025
+        alive_reward_rate = 0.01
 
-        # Track-specific tuning
         if self.track.track_name == "simple":
-            collision_penalty_rate = 100.0
-            gate_pass_reward_rate = 15.0
+            collision_penalty_rate = 50.0
+            wall_penalty_rate = 10.0
+            gate_pass_reward_rate = 10.0
+            direction_reward_rate = 0.02
+        
+        if self.track.track_name == "square":
+            collision_penalty_rate = 50.0
+            gate_pass_reward_rate = 5.0
             direction_reward_rate = 0.02
 
         # -----------------------------
@@ -370,18 +441,17 @@ class Trainer:
         epoch_bar = trange(
             start_epoch,
             n_epochs,
-            leave=True,
+            leave=False,
             position=2,
             initial=start_epoch,
             total=n_epochs,
             desc="Training",
         )
 
-        try:
-            for epoch in epoch_bar:
+        for epoch in epoch_bar:
                 # Reset cars for new epoch
-                cars.reset(track=self.track, start_idx=self.track_start_idx, epoch=None)
-                
+                cars.reset(track=self.track, start_idx=self.track_start_idx, epoch = epoch)
+
                 # Reset gate tracking
                 gate_indices.fill_(self.track_start_idx)
                 # For reverse cars, move one step in their direction so they aim at the correct next gate
@@ -426,9 +496,8 @@ class Trainer:
                     total_epochs=n_epochs,
                     scheduler=self.scheduler,
                     best_reward=best_reward,
+                    track_name=self.track_name,
                 )
 
-        finally:
-            self.plotter.close()
 
         return best_reward

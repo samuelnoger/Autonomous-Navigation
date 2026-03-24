@@ -35,6 +35,13 @@ def _plot_worker(recv_conn, max_points=1000, update_interval_ms=250):
             if msg == "__close__":
                 plt.close(fig)
                 return (line,)
+            # Support a save command sent from the parent process: ("__save__", path)
+            if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__save__":
+                try:
+                    fig.savefig(msg[1])
+                except Exception:
+                    pass
+                continue
             epoch, reward = msg
             epochs.append(epoch)
             rewards.append(reward)
@@ -62,6 +69,12 @@ def _plot_worker(recv_conn, max_points=1000, update_interval_ms=250):
             blit=False,
             cache_frame_data=False,
         )
+        # On some macOS/TkAgg setups a FuncAnimation can be created but have
+        # `event_source` set to None which later causes `add_callback` to fail
+        # during the draw step. Detect that case and treat it as a setup
+        # failure so we use the manual update fallback below.
+        if getattr(ani, "event_source", None) is None:
+            raise RuntimeError("FuncAnimation.event_source is None")
         # Keep a strong reference so animation callbacks continue to run.
         fig._reward_animation = ani
     except (AttributeError, RuntimeError) as e:
@@ -74,6 +87,13 @@ def _plot_worker(recv_conn, max_points=1000, update_interval_ms=250):
                 if msg == "__close__":
                     plt.close(fig)
                     return
+                # Handle save command
+                if isinstance(msg, tuple) and len(msg) == 2 and msg[0] == "__save__":
+                    try:
+                        fig.savefig(msg[1])
+                    except Exception:
+                        pass
+                    continue
                 epoch, reward = msg
                 epochs.append(epoch)
                 rewards.append(reward)
@@ -120,6 +140,21 @@ class RewardPlotter:
         try:
             self._send_conn.send((self._epoch, float(reward)))
             self._epoch += 1
+        except (BrokenPipeError, EOFError, OSError):
+            self._closed = True
+
+    def save(self, path):
+        """Request the plot worker save the current figure to `path`.
+
+        The save request is sent to the plotting process which calls
+        `fig.savefig(path)`. If the worker is not alive or the pipe is
+        closed this becomes a no-op.
+        """
+        if self._closed:
+            return
+        try:
+            # Send a tuple command that the worker recognizes.
+            self._send_conn.send(("__save__", str(path)))
         except (BrokenPipeError, EOFError, OSError):
             self._closed = True
 

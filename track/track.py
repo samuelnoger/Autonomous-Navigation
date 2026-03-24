@@ -2,7 +2,7 @@ import torch
 import math
 import numpy as np
 import cv2 # type: ignore
-from utils import line_intersection, generate_simple_track
+from utils import line_intersection, generate_simple_track, generate_triangle_track
 import geopandas as gpd # type: ignore
 
 class Track:
@@ -325,51 +325,52 @@ class Track:
     def get_items(self,track_name, outer_width=50, inner_width=10,
                   screen_width=800, screen_height=600):
         """Load track geometry from track name or geojson file."""
-        if track_name == "simple" or track_name == "square":
-            gates_per_segment = 1
-            inner_width = 10
-            outer_width = 45
-            corner_radius = 140 if track_name == "simple" else 60
-            centerline = generate_simple_track(
-                screen_width,
-                screen_height,
-                width=600,
-                height=400,
-                corner_points=6,
-                corner_radius=corner_radius
-            )
+
+        if track_name in ["simple", "square", "triangle", "square_narrow"]:
+            if track_name == "simple" or track_name == "square":
+                gates_per_segment = 1
+                inner_width = 10
+                outer_width = 45
+                corner_radius = 140 if track_name == "simple" else 60
+                centerline = generate_simple_track(
+                    screen_width,
+                    screen_height,
+                    width=600,
+                    height=400,
+                    corner_points=6,
+                    corner_radius=corner_radius
+                )
+            elif track_name == "triangle":
+                gates_per_segment = 1
+                inner_width = 10
+                outer_width = 45
+                corner_radius = 25
+                centerline = generate_triangle_track(
+                    screen_width,
+                    screen_height,
+                    width=600,
+                    height=400,
+                    corner_points=6,
+                    corner_radius=corner_radius
+                )
+
+            elif track_name == "square_narrow":
+                gates_per_segment = 1
+                inner_width = 7.5
+                outer_width = 42.5
+                corner_radius = 25
+                centerline = generate_simple_track(
+                    screen_width,
+                    screen_height,
+                    width=600,
+                    height=400,
+                    corner_points=5,
+                    corner_radius=corner_radius
+                )
 
             # Remove duplicate closure point before offsetting to avoid degenerate segments.
             if len(centerline) > 1 and np.allclose(centerline[0], centerline[-1]):
-                centerline = centerline[:-1]
-
-            track_borders = self.offset_track_borders(
-                centerline,
-                outer_width=outer_width,
-                inner_width=inner_width
-            )
-            # Close loops without destroying the first vertex.
-            track_borders[0][-1] = track_borders[0][0]  # inner_border
-            track_borders[1][-1] = track_borders[1][0]  # outer_border
-
-        elif track_name == "square_narrow":
-            gates_per_segment = 1
-            inner_width = 7.5
-            outer_width = 42.5
-            corner_radius = 25
-            centerline = generate_simple_track(
-                screen_width,
-                screen_height,
-                width=600,
-                height=400,
-                corner_points=5,
-                corner_radius=corner_radius
-            )
-
-             # Remove duplicate closure point before offsetting to avoid degenerate segments.
-            if len(centerline) > 1 and np.allclose(centerline[0], centerline[-1]):
-                centerline = centerline[:-1]
-
+                centerline = centerline[:-1]    
             track_borders = self.offset_track_borders(
                 centerline,
                 outer_width=outer_width,

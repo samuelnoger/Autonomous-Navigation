@@ -89,10 +89,10 @@ class CarState:
         self.accel_rate = 5.0
         self.friction = 0.02
         self.drift_factor = 0.25  # Velocity lag: 0 = instant, 1 = no effect
-        self.wheelbase = 15.0
+        self.wheelbase = 10.0
         self.max_steering_angle = math.pi / 4
-        self.max_grip_accel = 20.0
-        self.max_steering_rate = 0.25  # Max steering change per frame (prevents instant left-right switching)
+        self.max_grip_accel = 30.0
+        self.max_steering_rate = 1.0  
         self.enter_threshold = 1.0
         self.exit_threshold = 0.05
 
@@ -254,7 +254,7 @@ class CarState:
 
         # Speed loss from drifting (lateral friction during oversteer)
         slip_excess = (slip_ratio - 1.0).clamp(min=0.0)
-        drift_friction_factor = 5  # Tunable: higher = more speed loss while drifting
+        drift_friction_factor = 10  # Tunable: higher = more speed loss while drifting
         self.speed[slip_mask] = self.speed[slip_mask] * (1.0 - slip_excess[slip_mask] * drift_friction_factor * dt)
 
         # Recompute ideal velocity with the new (lower) speed from drift friction

@@ -1,7 +1,7 @@
 import tkinter as tk
 import torch
 from model import CarState, CarNet # your trained model classes
-from model import get_inputs  # function to compute NN inputs from car and track state
+from utils import get_inputs  # function to compute NN inputs from car and track state
 from track import Track  # your Track class
 from utils import args_nn  # argument parser for simulation parameters
 
@@ -243,11 +243,6 @@ if __name__ == "__main__":
 
     # Handle multi-track config - default to simple track for simulation
     track_name = args.track
-    if getattr(args, 'multi_track', False):
-        track_name = "simple"
-        print(f"Multi-track training detected. Using '{track_name}' track for simulation.")
-    else:
-        print(f"Loading track: {track_name}")
 
     track = Track(track_name, 1000, 600, device=device, ray_method=args.ray_method)
 
