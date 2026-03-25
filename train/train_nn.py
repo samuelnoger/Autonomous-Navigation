@@ -4,6 +4,8 @@ import os
 import json
 import torch
 import torch.optim as optim
+from torch.profiler import profile, ProfilerActivity
+import sys
 
 from track import Track
 from model import CarNet, Trainer
@@ -182,7 +184,9 @@ def main():
                 n_steps=n_steps,
                 start_epoch=start_epoch_for_phase,
                 best_reward=best_reward,
+                both_directions=False
             )
+            
     except KeyboardInterrupt:
         print("\nTraining interrupted by user. Checkpoint saved.")
     finally:

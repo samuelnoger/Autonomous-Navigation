@@ -25,5 +25,9 @@ def args_nn():
     parser.add_argument("--tracks",nargs="+",type=str,default=None,help="Comma-separated list of track names to train sequentially, e.g. 'simple,square,triangle'")
     parser.add_argument("--epochs", nargs="+", type=int, default=None, help="List of epoch counts matching --tracks, e.g. '100 150 200' or CSV '100,150'.")
     parser.add_argument("--save_plot", type=str, default="reward_plot.png", help="Path to save the final reward plot image after training; set empty to disable saving.")
+    parser.add_argument("--profile", action="store_true", help="Run a short profiler trace before training and save the trace to --profile_file")
+    parser.add_argument("--profile_epochs", type=int, default=1, help="Number of epochs to run during the profiling run")
+    parser.add_argument("--profile_steps", type=int, default=50, help="Number of steps per epoch to run during the profiling run")
+    parser.add_argument("--profile_file", type=str, default="profile_trace.json", help="Output file for profiler trace (Chrome trace JSON)")
 
     return parser

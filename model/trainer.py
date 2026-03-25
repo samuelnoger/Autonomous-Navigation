@@ -416,7 +416,79 @@ class Trainer:
 
         return episode_reward, mean_rewards
 
-    def fit(self, n_cars, n_rays, n_epochs, n_steps, start_epoch=0, best_reward=-float("inf")):
+    def collect_rollout(self, cars, n_steps, force_direction):
+        """Run a single rollout of length `n_steps` with all cars set to `force_direction`.
+
+        Returns:
+            log_sum: Tensor (n_cars,) sum of log-probs across steps for each car
+            returns: Tensor (n_cars,) undiscounted returns per car
+            mean_rewards: dict of mean rewards per component (scalars)
+            episode_reward: scalar mean episode reward across cars
+        """
+        # Force-reset cars to the requested direction
+        cars.reset(track=self.track, start_idx=self.track_start_idx, epoch=None, force_direction=force_direction)
+
+        # Gate tracking
+        gate_indices = torch.full((cars.n_cars,), self.track_start_idx, dtype=torch.long, device=self.device)
+        gate_indices = (gate_indices + cars.direction) % self.gates_tensor.shape[0]
+        last_gate_indices = (gate_indices.clone() - cars.direction) % self.gates_tensor.shape[0]
+
+        # Hidden state
+        if hasattr(self.model, 'init_hidden'):
+            hidden = self.model.init_hidden(cars.n_cars, self.device)
+        else:
+            hidden = None
+
+        n_cars_local = cars.n_cars
+        rewards_buffer = {
+            "speed": torch.zeros(n_steps, n_cars_local, device=self.device),
+            "gate": torch.zeros(n_steps, n_cars_local, device=self.device),
+            "collision": torch.zeros(n_steps, n_cars_local, device=self.device),
+            "wall": torch.zeros(n_steps, n_cars_local, device=self.device),
+            "direction": torch.zeros(n_steps, n_cars_local, device=self.device),
+            "alive": torch.zeros(n_steps, n_cars_local, device=self.device),
+        }
+
+        log_probs = torch.zeros(n_steps, n_cars_local, device=self.device)
+        step_rewards_total = torch.zeros(n_steps, n_cars_local, device=self.device)
+        prev_dist = torch.zeros(n_cars_local, device=self.device)
+
+        # Use a step-level progress bar for visibility when running epochs
+    
+        step_bar = tqdm(range(n_steps), desc=f"Rollout dir={force_direction}", leave=False, position=1)
+
+        for step in step_bar:
+            if not cars.active.any():
+                break
+
+            log_prob, reward, step_rewards, prev_dist, hidden = self.train_step(
+                cars, gate_indices, last_gate_indices, prev_dist, step, n_steps, hidden
+            )
+
+            log_probs[step] = log_prob
+            step_rewards_total[step] = reward
+
+            for k in step_rewards:
+                rewards_buffer[k][step] = step_rewards[k]
+
+            if hasattr(step_bar, "set_postfix") and (step % 20 == 0):
+                try:
+                    active_count = cars.active.sum().item()
+                    step_bar.set_postfix(active_cars=f"{active_count}/{n_cars_local}")
+                except Exception:
+                    pass
+
+        # Summaries
+        returns = step_rewards_total.sum(dim=0)
+        episode_reward = returns.mean().item()
+        mean_rewards = {k: buf.sum(dim=0).mean().item() for k, buf in rewards_buffer.items()}
+
+        # Sum log-probs over time per car
+        log_sum = log_probs.sum(dim=0)
+
+        return log_sum, returns, mean_rewards, episode_reward
+
+    def fit(self, n_cars, n_rays, n_epochs, n_steps, start_epoch=0, best_reward=-float("inf"), both_directions=False):
         """Main training loop.
 
         Args:
@@ -433,71 +505,80 @@ class Trainer:
         # Initialize car states
         cars = CarState(n_cars, n_rays, device=self.device)
 
-        # Initialize gate tracking
-        gate_indices = torch.full(
-            (n_cars,), self.track_start_idx, dtype=torch.long, device=self.device
-        )
-
         epoch_bar = trange(
             start_epoch,
             n_epochs,
             leave=False,
-            position=2,
+            position=0,
             initial=start_epoch,
             total=n_epochs,
             desc="Training",
         )
 
         for epoch in epoch_bar:
-                # Reset cars for new epoch
-                cars.reset(track=self.track, start_idx=self.track_start_idx, epoch = epoch)
 
-                # Reset gate tracking
-                gate_indices.fill_(self.track_start_idx)
-                # For reverse cars, move one step in their direction so they aim at the correct next gate
-                gate_indices = (gate_indices + cars.direction) % self.gates_tensor.shape[0]
-                last_gate_indices = (
-                    gate_indices.clone() - cars.direction
-                ) % self.gates_tensor.shape[0]
+            if both_directions:
+                # Use the helper to collect forward and reverse rollouts
+                logs_fwd, returns_fwd, mean_fwd, ep_fwd = self.collect_rollout(cars, n_steps, force_direction=1)
+                logs_rev, returns_rev, mean_rev, ep_rev = self.collect_rollout(cars, n_steps, force_direction=-1)
 
-                # Train for one epoch
-                episode_reward, mean_rewards = self.train_epoch(
-                    cars, n_steps, epoch, gate_indices, last_gate_indices
+                # Normalize per-rollout then combine
+                r_fwd = (returns_fwd - returns_fwd.mean()) / (returns_fwd.std() + 1e-6)
+                r_rev = (returns_rev - returns_rev.mean()) / (returns_rev.std() + 1e-6)
+
+                combined_logs = torch.cat([logs_fwd, logs_rev], dim=0)
+                combined_returns = torch.cat([r_fwd, r_rev], dim=0)
+
+                loss = -(combined_logs * combined_returns).mean()
+
+                # Aggregate metrics
+                episode_reward = 0.5 * (ep_fwd + ep_rev)
+                mean_rewards = {}
+                for k in mean_fwd.keys():
+                    mean_rewards[k] = 0.5 * (mean_fwd[k] + mean_rev[k])
+
+            else:
+                logs, returns, mean_rewards, episode_reward = self.collect_rollout(cars, n_steps, force_direction=1)
+                returns = (returns - returns.mean()) / (returns.std() + 1e-6)
+                loss = -(logs * returns).mean()
+
+            
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
+
+            # Scheduler step
+            if self.scheduler is not None:
+                self.scheduler.step(episode_reward)
+
+            if episode_reward > best_reward:
+                best_reward = episode_reward
+
+            # Plot raw episode reward (keep normalized returns for loss only)
+            norm_episode = combined_returns.mean().item()
+            self.plotter.add_reward(episode_reward)
+
+            if epoch % 10 == 0 and epoch != 0:
+                current_lr = self.optimizer.param_groups[0]["lr"]
+                epoch_bar.write(
+                    f"Epoch {epoch} [{self.track_name}] | Total reward: {episode_reward:.2f} | "
+                    f"Speed:{mean_rewards['speed']:.2f}, Dir.:{mean_rewards['direction']:.2f}, "
+                    f"Gate:{mean_rewards['gate']:.2f}, Coll.:{mean_rewards['collision']:.2f}, "
+                    f"Wall:{mean_rewards['wall']:.2f}, Alive:{mean_rewards['alive']:.2f} | "
+                    f"Best:{best_reward:.2f} | LR:{current_lr:.2e}"
                 )
 
-                # Update learning rate scheduler
-                if self.scheduler is not None:
-                    self.scheduler.step(episode_reward)
-
-                # Track best reward
-                if episode_reward > best_reward:
-                    best_reward = episode_reward
-
-                # Send reward to plotter
-                self.plotter.add_reward(episode_reward)
-
-                # Log metrics
-                if epoch % 10 == 0 and epoch != 0:
-                    current_lr = self.optimizer.param_groups[0]["lr"]
-                    epoch_bar.write(
-                        f"Epoch {epoch} [{self.track_name}] | Total reward: {episode_reward:.2f} | "
-                        f"Speed:{mean_rewards['speed']:.2f}, Dir.:{mean_rewards['direction']:.2f}, "
-                        f"Gate:{mean_rewards['gate']:.2f}, Coll.:{mean_rewards['collision']:.2f}, "
-                        f"Wall:{mean_rewards['wall']:.2f}, Alive:{mean_rewards['alive']:.2f} | "
-                        f"Best:{best_reward:.2f} | LR:{current_lr:.2e}"
-                    )
-
-                # Save checkpoint
-                save_checkpoint(
-                    epoch,
-                    self.model,
-                    self.optimizer,
-                    self.checkpoint_path,
-                    total_epochs=n_epochs,
-                    scheduler=self.scheduler,
-                    best_reward=best_reward,
-                    track_name=self.track_name,
-                )
+            save_checkpoint(
+                epoch,
+                self.model,
+                self.optimizer,
+                self.checkpoint_path,
+                total_epochs=n_epochs,
+                scheduler=self.scheduler,
+                best_reward=best_reward,
+                track_name=self.track_name,
+            )
 
 
         return best_reward

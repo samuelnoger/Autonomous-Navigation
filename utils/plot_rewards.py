@@ -42,7 +42,21 @@ def _plot_worker(recv_conn, max_points=1000, update_interval_ms=250):
                 except Exception:
                     pass
                 continue
-            epoch, reward = msg
+            # Message formats supported:
+            # (epoch, reward) or (epoch, raw_reward, norm_reward)
+            if isinstance(msg, tuple) and len(msg) == 2:
+                epoch, reward = msg
+                norm_reward = None
+            elif isinstance(msg, tuple) and len(msg) >= 3:
+                epoch, raw_reward, norm_reward = msg[0], msg[1], msg[2]
+                reward = norm_reward
+            else:
+                # Fallback: unexpected format
+                try:
+                    epoch, reward = msg
+                    norm_reward = None
+                except Exception:
+                    continue
             epochs.append(epoch)
             rewards.append(reward)
 
@@ -94,7 +108,16 @@ def _plot_worker(recv_conn, max_points=1000, update_interval_ms=250):
                     except Exception:
                         pass
                     continue
-                epoch, reward = msg
+                # Message formats supported: (epoch, reward) or (epoch, raw, norm)
+                if isinstance(msg, tuple) and len(msg) == 2:
+                    epoch, reward = msg
+                elif isinstance(msg, tuple) and len(msg) >= 3:
+                    epoch, raw_reward, reward = msg[0], msg[1], msg[2]
+                else:
+                    try:
+                        epoch, reward = msg
+                    except Exception:
+                        continue
                 epochs.append(epoch)
                 rewards.append(reward)
 
@@ -138,8 +161,29 @@ class RewardPlotter:
         if self._closed or not self._proc.is_alive():
             return
         try:
-            self._send_conn.send((self._epoch, float(reward)))
+            # Support sending optional normalized reward: caller may pass a
+            # tuple (raw, normalized) by calling add_reward(raw, normalized)
+            if isinstance(reward, tuple) and len(reward) == 2:
+                raw, norm = float(reward[0]), float(reward[1])
+                self._send_conn.send((self._epoch, raw, norm))
+            else:
+                self._send_conn.send((self._epoch, float(reward)))
             self._epoch += 1
+        except (BrokenPipeError, EOFError, OSError):
+            self._closed = True
+
+    def save(self, path):
+        """Request the plot worker save the current figure to `path`.
+
+        The save request is sent to the plotting process which calls
+        `fig.savefig(path)`. If the worker is not alive or the pipe is
+        closed this becomes a no-op.
+        """
+        if self._closed:
+            return
+        try:
+            # Send a tuple command that the worker recognizes.
+            self._send_conn.send(("__save__", str(path)))
         except (BrokenPipeError, EOFError, OSError):
             self._closed = True
 

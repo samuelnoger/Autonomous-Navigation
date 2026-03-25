@@ -96,7 +96,7 @@ class CarState:
         self.enter_threshold = 1.0
         self.exit_threshold = 0.05
 
-    def reset(self, track, start_idx, epoch):
+    def reset(self, track, start_idx, epoch, force_direction=None):
         """Reset car positions and velocities for a new episode.
 
         Args:
@@ -145,22 +145,29 @@ class CarState:
             torch.rand(self.n_cars, device=device) - 0.5
         ) * 0.25  # +/-0.2 rad random spread
 
-        # --- Assign directions: alternate based on epoch for simulation, randomize for training ---
+        # --- Assign directions ---
         n = self.n_cars
-        #self.direction = -torch.ones(n, dtype=torch.int64, device=device)
-        if epoch is not None:
-            # Simulation mode: alternate direction each epoch
-            dir_value = 1 if epoch % 2 == 0 else -1
-            self.direction.fill_(dir_value)
+        if force_direction is not None:
+            # Force a single direction (1 or -1) for all cars or accept a tensor
+            if isinstance(force_direction, int):
+                self.direction.fill_(force_direction)
+            else:
+                # assume tensor-like of shape (n,)
+                self.direction = force_direction.to(device)
         else:
-            # Training mode: balanced half forward / half reverse
-            half = n // 2
-            dir_tensor = torch.ones(n, dtype=torch.int, device=device)
-            dir_tensor[half: half * 2] = -1
-            if n % 2 == 1:
-                # randomize leftover car direction
-                dir_tensor[-1] = -1 if torch.rand(1, device=device) < 0.5 else 1
-            self.direction = dir_tensor
+            if epoch is not None:
+                # Simulation mode: alternate direction each epoch
+                dir_value = 1 if epoch % 2 == 0 else -1
+                self.direction.fill_(dir_value)
+            else:
+                # Training mode: balanced half forward / half reverse
+                half = n // 2
+                dir_tensor = torch.ones(n, dtype=torch.int, device=device)
+                dir_tensor[half: half * 2] = -1
+                if n % 2 == 1:
+                    # randomize leftover car direction
+                    dir_tensor[-1] = -1 if torch.rand(1, device=device) < 0.5 else 1
+                self.direction = dir_tensor
 
         self.pos = start_pos
         # Flip angle by 180° for reverse cars
