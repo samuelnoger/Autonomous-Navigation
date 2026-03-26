@@ -152,18 +152,16 @@ def get_inputs(cars,track, gates_tensor, gate_indices, max_ray_dist):
 
         # ---- Ray distances ----
         ray_angles = cars.ray_angles  # (N, R)
-        ray_dists_original = track.get_lines_along_rays(
-            cars.pos, ray_angles, max_ray_dist
-        )  # (N, R)
+        ray_dists_original = track.get_lines_along_rays(cars.pos, ray_angles, max_ray_dist)  # (N, R)
         ray_dists = ray_dists_original / max_ray_dist
 
         # ---- Heading error to next gate ----
-        delta = next_gate_centers - cars.pos  # (N, 2)
-        target_angle = torch.atan2(delta[:, 1], delta[:, 0])
-        heading_error = target_angle - cars.angle
-        heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
-        sin_error = torch.sin(heading_error)
-        cos_error = torch.cos(heading_error)
+        #delta = next_gate_centers - cars.pos  # (N, 2)
+        #target_angle = torch.atan2(delta[:, 1], delta[:, 0])
+        #heading_error = target_angle - cars.angle
+        #heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
+        #sin_error = torch.sin(heading_error)
+        #cos_error = torch.cos(heading_error)
 
         # ---- Speed input (normalize) ----
         speed_input = cars.speed.unsqueeze(1) / 140.0
@@ -203,9 +201,7 @@ def get_inputs(cars,track, gates_tensor, gate_indices, max_ray_dist):
         # ---- Concatenate all features ----
         feature_list = [
             ray_dists,  # n_rays features
-            speed_input,  # 1 feature
-            sin_error.unsqueeze(1),  # 1 feature
-            cos_error.unsqueeze(1),  # 1 feature
+            speed_input
         ]
         feature_list.extend(curvatures)  # 6 features (3 gates * 2 for sin/cos)
 
@@ -213,133 +209,6 @@ def get_inputs(cars,track, gates_tensor, gate_indices, max_ray_dist):
         
         return inputs, ray_dists_original
 
-
-def compute_step_reward(
-    cars,
-    track,
-    gates_tensor,
-    gate_indices,
-    last_gate_indices,
-    ray_dists,
-    prev_dist,
-    step,
-    n_steps,
-    max_ray_dist,
-):
-    """
-    Compute step-wise rewards and update car states for episode-level cumulative reward.
-
-    Returns:
-        step_rewards: dict of reward components (each tensor of shape [n_cars])
-        prev_dist: updated distance to next gate (tensor [n_cars])
-    """
-    pos = cars.pos
-    speed = cars.speed
-
-    speed_reward_rate = 0.005  # reward per unit speed (increased from 0.001)
-    collision_penalty_rate = 50  # penalty for collision
-    gate_pass_reward_rate = 2.0  # (10.0 when starting new later 1.0)reward for passing a gate
-    wall_penalty_rate = 5  #(1.0 when starting new later 0.5) penalty for hitting the wall
-    direction_reward_rate = 0.01  #(0.05 when starting new later 0.005) reward for heading toward next gate
-    alive_reward_rate = 0.025  # (0.1 when starting new later 0.01) default alive reward
-
-    if track.track_name == "simple":
-        speed_reward_rate = 0.005
-        collision_penalty_rate = 100.0  # penalty for collision
-        gate_pass_reward_rate = 10.0  # reward for passing a gate
-        wall_penalty_rate = 10.0  # penalty for hitting the wall
-        direction_reward_rate = 0.05  # reward for heading toward next gate
-        alive_reward_rate = 0.1
-
-
-    # -----------------------------
-    # Distance to next gate
-    # -----------------------------
-    gate_coords = gates_tensor[gate_indices]
-    x1, y1 = gate_coords[:, 0], gate_coords[:, 1]
-    x2, y2 = gate_coords[:, 2], gate_coords[:, 3]
-
-    line_vec = torch.stack([x2 - x1, y2 - y1], dim=1)
-    p_vec = pos - torch.stack([x1, y1], dim=1)
-    line_len2 = (line_vec**2).sum(dim=1)
-    u = torch.clamp((p_vec * line_vec).sum(dim=1) / line_len2, 0.0, 1.0)
-    closest = torch.stack([x1, y1], dim=1) + u.unsqueeze(1) * line_vec
-    dist = (pos - closest).norm(dim=1)
-
-    # -----------------------------
-    # Reward components
-    # -----------------------------
-    
-    # Speed reward: encourage faster speeds
-    speed_reward = speed_reward_rate * speed * cars.active
-
-    # Gate passing: reward cars that passed through the gate this step
-    passed_mask = (
-        (dist < 10.0)
-        & (gate_indices == (last_gate_indices + cars.direction) % track.gates.shape[0])
-        & cars.active
-    )
-    gate_reward = torch.zeros_like(speed)
-    with torch.no_grad():
-        cars.gates_passed[passed_mask] += cars.direction[passed_mask]  # Increment or decrement based on direction
-        gate_reward[passed_mask] = gate_pass_reward_rate
-        last_gate_indices[passed_mask] = gate_indices[passed_mask]
-        gate_indices[passed_mask] = (
-            gate_indices[passed_mask] + cars.direction[passed_mask]
-        ) % gates_tensor.shape[0]
-
-    prev_active = cars.active.clone()
-    cars.check_collisions(track)
-
-    # The penalty is scaled by how late in the episode the collision occurs, to encourage longer survival.
-    if track.track_name == "simple":  # simpler track with fewer collision opportunities, so use scaled penalty
-        collision_penalty = (
-            -(~cars.active & prev_active).float() * (n_steps - step) / n_steps * collision_penalty_rate
-        )
-    else:
-        # Constant penalty for collision, regardless of when it happens, to strongly encourage avoiding collisions.
-        collision_penalty = (
-            -(~cars.active & prev_active).float() *(n_steps - 0.6*step)/n_steps * collision_penalty_rate
-        )
-
-
-    # Direction reward: encourage heading toward next gate
-
-    track_width = track.track_width
-    min_dist = ray_dists.min(dim=1).values  # Already in original units (pixels)
-    safe_margin = 0.2 * track_width
-    scaled_min_dist = min_dist / safe_margin
-    wall_penalty = (-wall_penalty_rate * (1.0 - torch.clamp(scaled_min_dist, 0, 1)) ** 2 * cars.active)
-
-    next_gate_centers = (
-        gates_tensor[gate_indices, 0:2] + gates_tensor[gate_indices, 2:4]
-    ) / 2
-    gate_vec = next_gate_centers - cars.pos
-    gate_dir = gate_vec / (gate_vec.norm(dim=1, keepdim=True) + 1e-6)
-
-    vel = cars.vel
-    vel_norm = vel / (vel.norm(dim=1, keepdim=True) + 1e-6)
-
-    direction_reward = (vel_norm * gate_dir).sum(dim=1) * cars.active * direction_reward_rate
-
-    # print("Before: ",progress_reward[:20])
-    # -----------------------------
-    # Alive reward: small reward for each timestep the car is active
-    alive_reward = alive_reward_rate * cars.active
-
-    # Aggregate step reward
-    step_rewards = {
-        "speed": speed_reward,
-        "gate": gate_reward,
-        "collision": collision_penalty,
-        "wall": wall_penalty,
-        "direction": direction_reward,
-        "alive": alive_reward,
-    }
-
-    prev_dist = dist.detach()
-
-    return step_rewards, prev_dist
 
 
 def line_intersection(line1, line2):

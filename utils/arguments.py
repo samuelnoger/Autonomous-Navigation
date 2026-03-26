@@ -7,7 +7,7 @@ def args_nn():
     parser.add_argument("--n_epochs", type=int, default=500, help="Number of epochs to train")
     parser.add_argument("--n_steps", type=int, default=1000, help="Steps per epoch")
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
-    parser.add_argument("--input_dim", type=int, default=26, help="Input dimension size (n_rays[17] + speed[1] + heading[2] + dist_to_gate[1] + min_ray[1] + curvature[6] = 26)")
+    parser.add_argument("--input_dim", type=int, default=24, help="Input dimension size (n_rays[17] + speed[1] + heading[2] + dist_to_gate[1] + min_ray[1] + curvature[6] = 26)")
     parser.add_argument("--hidden_dim", type=int, default=128, help="Hidden dimension size")
     parser.add_argument("--output_dim", type=int, default=2, help="Output dimension size")
     parser.add_argument("--track", type=str, default="simple", help="Track name or path to geojson")

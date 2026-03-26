@@ -184,7 +184,7 @@ def main():
                 n_steps=n_steps,
                 start_epoch=start_epoch_for_phase,
                 best_reward=best_reward,
-                both_directions=False
+                both_directions=True
             )
             
     except KeyboardInterrupt:

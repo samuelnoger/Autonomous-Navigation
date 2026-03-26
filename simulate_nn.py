@@ -178,7 +178,7 @@ class Simulation:
                 x0, y0 = start.tolist()
                 x1, y1 = end.tolist()
                 self.canvas.create_line(
-                    x0, y0, x1, y1, fill="orange", width=1, tags="ray"
+                    x0, y0, x1, y1, fill="orange", width=0.1, tags="ray"
                 )
 
         self.canvas.delete("text")

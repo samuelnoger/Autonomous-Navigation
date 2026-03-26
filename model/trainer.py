@@ -4,7 +4,7 @@ from torch.distributions import Normal
 from tqdm import tqdm, trange
 
 from model import CarState
-from utils import save_checkpoint, RewardPlotter
+from utils import save_checkpoint, get_inputs, RewardPlotter
 
 
 class Trainer:
@@ -63,70 +63,8 @@ class Trainer:
             inputs: Model input tensor (N, input_dim).
             ray_dists: Ray distances for reward computation (N, n_rays).
         """
-        # Compute next gate centers
-        next_gate_centers = (
-            self.gates_tensor[gate_indices, 0:2] + self.gates_tensor[gate_indices, 2:4]
-        ) / 2
-
-        # ---- Ray distances ----
-        ray_angles = cars.ray_angles  # (N, R)
-        ray_dists_original = self.track.get_lines_along_rays(
-            cars.pos, ray_angles, self.max_ray_dist
-        )  # (N, R)
-        ray_dists = ray_dists_original / self.max_ray_dist
-
-        # ---- Heading error to next gate ----
-        delta = next_gate_centers - cars.pos  # (N, 2)
-        target_angle = torch.atan2(delta[:, 1], delta[:, 0])
-        heading_error = target_angle - cars.angle
-        heading_error = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
-        sin_error = torch.sin(heading_error)
-        cos_error = torch.cos(heading_error)
-
-        # ---- Speed input (normalize) ----
-        speed_input = cars.speed.unsqueeze(1) / 140.0
-
-        # ---- Lookahead curvature (gates 1, 2, 3 ahead) ----
-        curvatures = []
-        n_gates = self.gates_tensor.shape[0]
-        for lookahead in [1, 2, 3]:
-            curr_idx = gate_indices
-            next_idx = (gate_indices + lookahead * cars.direction) % n_gates
-
-            # Extract gate vectors and compute direction vectors
-            curr_gate = self.gates_tensor[curr_idx]  # (N, 4)
-            next_gate = self.gates_tensor[next_idx]  # (N, 4)
-
-            curr_gx = curr_gate[:, 2] - curr_gate[:, 0]
-            curr_gy = curr_gate[:, 3] - curr_gate[:, 1]
-            curr_norm = torch.hypot(curr_gx, curr_gy)
-            curr_dir_x = -curr_gy / (curr_norm + 1e-6)
-            curr_dir_y = curr_gx / (curr_norm + 1e-6)
-
-            next_gx = next_gate[:, 2] - next_gate[:, 0]
-            next_gy = next_gate[:, 3] - next_gate[:, 1]
-            next_norm = torch.hypot(next_gx, next_gy)
-            next_dir_x = -next_gy / (next_norm + 1e-6)
-            next_dir_y = next_gx / (next_norm + 1e-6)
-
-            # Curvature: angle between current and next gate directions
-            cos_curv = curr_dir_x * next_dir_x + curr_dir_y * next_dir_y
-            sin_curv = (curr_dir_x * next_dir_y - curr_dir_y * next_dir_x) #* cars.direction
-
-            curvatures.append(cos_curv.unsqueeze(1))
-            curvatures.append(sin_curv.unsqueeze(1))
-
-        # ---- Concatenate all features ----
-        feature_list = [
-            ray_dists,  # n_rays features
-            speed_input,  # 1 feature
-            sin_error.unsqueeze(1),  # 1 feature
-            cos_error.unsqueeze(1),  # 1 feature
-        ]
-        feature_list.extend(curvatures)  # 6 features (3 gates * 2 for sin/cos)
-
-        inputs = torch.cat(feature_list, dim=1)
-        return inputs, ray_dists_original
+        
+        return get_inputs(cars,self.track, self.gates_tensor, gate_indices, self.max_ray_dist)
 
     def compute_rewards(
         self, cars, gate_indices, last_gate_indices, ray_dists, prev_dist, step, n_steps
@@ -156,19 +94,21 @@ class Trainer:
         speed_reward_rate = 0.005
         collision_penalty_rate = 20.0
         gate_pass_reward_rate = 2.0
-        wall_penalty_rate = 1.0
-        direction_reward_rate = 0.01
-        alive_reward_rate = 0.01
+        wall_penalty_rate = 0.0 #change to 1.0 if training new model
+        direction_reward_rate = 0.0 #change to 0.01 or 0.02 if training new model
+        alive_reward_rate = 0.0 #change to 0.01 if training new model
 
         if self.track.track_name == "simple":
             collision_penalty_rate = 50.0
             wall_penalty_rate = 10.0
+            alive_reward_rate = 0.02
             gate_pass_reward_rate = 10.0
             direction_reward_rate = 0.02
         
         if self.track.track_name == "square":
             collision_penalty_rate = 50.0
             gate_pass_reward_rate = 5.0
+            alive_reward_rate = 0.01
             direction_reward_rate = 0.02
 
         # -----------------------------
@@ -416,7 +356,7 @@ class Trainer:
 
         return episode_reward, mean_rewards
 
-    def collect_rollout(self, cars, n_steps, force_direction):
+    def collect_rollout(self, cars, n_steps, force_direction,epoch):
         """Run a single rollout of length `n_steps` with all cars set to `force_direction`.
 
         Returns:
@@ -455,7 +395,7 @@ class Trainer:
 
         # Use a step-level progress bar for visibility when running epochs
     
-        step_bar = tqdm(range(n_steps), desc=f"Rollout dir={force_direction}", leave=False, position=1)
+        step_bar = tqdm(range(n_steps), desc=f"Epoch {epoch}, dir={force_direction}", leave=False, position=1)
 
         for step in step_bar:
             if not cars.active.any():
@@ -519,8 +459,8 @@ class Trainer:
 
             if both_directions:
                 # Use the helper to collect forward and reverse rollouts
-                logs_fwd, returns_fwd, mean_fwd, ep_fwd = self.collect_rollout(cars, n_steps, force_direction=1)
-                logs_rev, returns_rev, mean_rev, ep_rev = self.collect_rollout(cars, n_steps, force_direction=-1)
+                logs_fwd, returns_fwd, mean_fwd, ep_fwd = self.collect_rollout(cars, n_steps, force_direction=1,epoch=epoch)
+                logs_rev, returns_rev, mean_rev, ep_rev = self.collect_rollout(cars, n_steps, force_direction=-1,epoch=epoch)
 
                 # Normalize per-rollout then combine
                 r_fwd = (returns_fwd - returns_fwd.mean()) / (returns_fwd.std() + 1e-6)
@@ -538,7 +478,7 @@ class Trainer:
                     mean_rewards[k] = 0.5 * (mean_fwd[k] + mean_rev[k])
 
             else:
-                logs, returns, mean_rewards, episode_reward = self.collect_rollout(cars, n_steps, force_direction=1)
+                logs, returns, mean_rewards, episode_reward = self.collect_rollout(cars, n_steps, force_direction=1,epoch=epoch)
                 returns = (returns - returns.mean()) / (returns.std() + 1e-6)
                 loss = -(logs * returns).mean()
 
@@ -556,7 +496,6 @@ class Trainer:
                 best_reward = episode_reward
 
             # Plot raw episode reward (keep normalized returns for loss only)
-            norm_episode = combined_returns.mean().item()
             self.plotter.add_reward(episode_reward)
 
             if epoch % 10 == 0 and epoch != 0:
