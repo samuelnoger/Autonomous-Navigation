@@ -342,8 +342,8 @@ class Track:
                 )
             elif track_name == "triangle":
                 gates_per_segment = 1
-                inner_width = 10
-                outer_width = 45
+                inner_width = 7.5
+                outer_width = 37.5
                 corner_radius = 25
                 centerline = generate_triangle_track(
                     screen_width,

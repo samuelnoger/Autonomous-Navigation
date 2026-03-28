@@ -172,6 +172,7 @@ def get_inputs(cars,track, gates_tensor, gate_indices, max_ray_dist):
         car_heading_y = torch.sin(cars.angle)
 
         curvatures = []
+        distances = []
         n_gates = gates_tensor.shape[0]
         for lookahead in [1, 2, 3]:
             next_idx = (gate_indices + lookahead * cars.direction) % n_gates
@@ -181,6 +182,15 @@ def get_inputs(cars,track, gates_tensor, gate_indices, max_ray_dist):
 
             next_gx = next_gate[:, 2] - next_gate[:, 0]
             next_gy = next_gate[:, 3] - next_gate[:, 1]
+
+            # Distance from car position to the center of the lookahead gate
+            next_center = (next_gate[:, 0:2] + next_gate[:, 2:4]) / 2
+            next_dist_to_center = (next_center - cars.pos).norm(dim=1)
+
+            # Normalize and clip by max_ray_dist
+            next_dist_norm = torch.clamp(next_dist_to_center / max_ray_dist, max=1.0)
+            distances.append(next_dist_norm.unsqueeze(1))
+
             next_norm = torch.hypot(next_gx, next_gy)
             next_dir_x = -next_gy / (next_norm + 1e-6)
             next_dir_y = next_gx / (next_norm + 1e-6)
@@ -204,6 +214,7 @@ def get_inputs(cars,track, gates_tensor, gate_indices, max_ray_dist):
             speed_input
         ]
         feature_list.extend(curvatures)  # 6 features (3 gates * 2 for sin/cos)
+        feature_list.extend(distances)   # 3 features (distances to lookahead gate centers)
 
         inputs = torch.cat(feature_list, dim=1)
         

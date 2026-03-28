@@ -87,11 +87,12 @@ class CarState:
 
         self.max_speed = 100.0
         self.accel_rate = 5.0
+        self.breaking_rate = 10.0
         self.friction = 0.02
         self.drift_factor = 0.25  # Velocity lag: 0 = instant, 1 = no effect
         self.wheelbase = 10.0
         self.max_steering_angle = math.pi / 4
-        self.max_grip_accel = 30.0
+        self.max_grip_accel = 25.0
         self.max_steering_rate = 1.0  
         self.enter_threshold = 1.0
         self.exit_threshold = 0.05
@@ -208,6 +209,7 @@ class CarState:
         wheelbase = self.wheelbase
         max_steering_angle = self.max_steering_angle
         max_grip_accel = self.max_grip_accel
+        breaking_rate = self.breaking_rate
 
         self.prev_pos = self.pos.clone()
         # ============================================================================
@@ -225,7 +227,12 @@ class CarState:
         # ============================================================================
         # SPEED: Acceleration + friction
         # ============================================================================
-        self.speed = self.speed + accel * accel_rate * dt
+        # Use elementwise logical ops for tensor masks (avoid Python `or/and`)
+        accel_mask = (accel >= 0) | (self.speed <= 0)
+        brake_mask = (accel < 0) & (self.speed > 0)
+        self.speed[accel_mask] = self.speed[accel_mask] + accel[accel_mask] * accel_rate * dt
+        self.speed[brake_mask] = self.speed[brake_mask] + accel[brake_mask] * breaking_rate * dt
+
         self.speed = self.speed * (1.0 - friction * dt)
         self.speed = torch.clamp(self.speed, -max_speed, max_speed)
 

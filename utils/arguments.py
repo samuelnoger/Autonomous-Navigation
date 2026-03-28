@@ -7,7 +7,7 @@ def args_nn():
     parser.add_argument("--n_epochs", type=int, default=500, help="Number of epochs to train")
     parser.add_argument("--n_steps", type=int, default=1000, help="Steps per epoch")
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
-    parser.add_argument("--input_dim", type=int, default=24, help="Input dimension size (n_rays[17] + speed[1] + heading[2] + dist_to_gate[1] + min_ray[1] + curvature[6] = 26)")
+    parser.add_argument("--input_dim", type=int, default=26, help="Input dimension size (n_rays[17] + speed[1] + heading[2] + dist_to_gate[1] + min_ray[1] + curvature[6] = 26)")
     parser.add_argument("--hidden_dim", type=int, default=128, help="Hidden dimension size")
     parser.add_argument("--output_dim", type=int, default=2, help="Output dimension size")
     parser.add_argument("--track", type=str, default="simple", help="Track name or path to geojson")
@@ -25,9 +25,5 @@ def args_nn():
     parser.add_argument("--tracks",nargs="+",type=str,default=None,help="Comma-separated list of track names to train sequentially, e.g. 'simple,square,triangle'")
     parser.add_argument("--epochs", nargs="+", type=int, default=None, help="List of epoch counts matching --tracks, e.g. '100 150 200' or CSV '100,150'.")
     parser.add_argument("--save_plot", type=str, default="reward_plot.png", help="Path to save the final reward plot image after training; set empty to disable saving.")
-    parser.add_argument("--profile", action="store_true", help="Run a short profiler trace before training and save the trace to --profile_file")
-    parser.add_argument("--profile_epochs", type=int, default=1, help="Number of epochs to run during the profiling run")
-    parser.add_argument("--profile_steps", type=int, default=50, help="Number of steps per epoch to run during the profiling run")
-    parser.add_argument("--profile_file", type=str, default="profile_trace.json", help="Output file for profiler trace (Chrome trace JSON)")
-
+    
     return parser
