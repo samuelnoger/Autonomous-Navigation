@@ -1,5 +1,6 @@
 import tkinter as tk
 import torch
+from torch.distributions import Normal
 from model import CarState, CarNet # your trained model classes
 from utils import get_inputs  # function to compute NN inputs from car and track state
 from track import Track  # your Track class
@@ -9,8 +10,8 @@ from utils import args_nn  # argument parser for simulation parameters
 # Simulation parameters
 # -----------------------------
 PHYSICS_DT = 0.1  # seconds per physics update
-CAR_WIDTH = 5
-CAR_LENGTH = 10
+CAR_WIDTH = 3
+CAR_LENGTH = 7
 MAX_RENDER_FPS = 60  # optional cap on rendering speed
 
 
@@ -19,7 +20,7 @@ MAX_RENDER_FPS = 60  # optional cap on rendering speed
 # -----------------------------
 class Simulation:
 
-    def __init__(self, track, model, n_cars=1, n_rays=13, start_idx=0, device="cpu", max_ray_dist=500, steer_smooth_alpha=0.6):
+    def __init__(self, track, model, n_cars=1, n_rays=13, start_idx=0, device="cpu", max_ray_dist=500, steer_smooth_alpha=0.8, steer_noise=0.02, accel_noise=0.05):
         self.track = track
         self.model = model.to(device)
         self.n_cars = n_cars
@@ -27,6 +28,8 @@ class Simulation:
         self.device = device
         self.max_ray_dist = max_ray_dist
         self.steer_smooth_alpha = steer_smooth_alpha
+        self.steer_noise = steer_noise
+        self.accel_noise = accel_noise
         self.start_idx = start_idx
         self.timestep = 0
         self.epoch = 0
@@ -131,8 +134,20 @@ class Simulation:
                 outputs, self.hidden = self.model(inputs, self.hidden)
             else:
                 outputs = self.model(inputs)
-            steer = outputs[:, 0]
-            accel = outputs[:, 1]
+
+            # Policy: sample actions from Normal distributions (match Trainer sampling)
+            steer_mean = outputs[:, 0]
+            accel_mean = outputs[:, 1]
+
+            steer_dist = Normal(steer_mean, self.steer_noise)
+            accel_dist = Normal(accel_mean, self.accel_noise)
+
+            steer = torch.clamp(steer_dist.sample(), -1.0, 1.0)
+            accel = torch.clamp(accel_dist.sample(), -1.0, 1.0)
+
+            # Keep a copy of active flags to detect crashes for debug printing
+            prev_active = self.cars.active.clone()
+
             self.cars.physics_update(steer, accel, dt=PHYSICS_DT, steer_smooth_alpha=self.steer_smooth_alpha)
             self.cars.check_collisions(self.track)
 
@@ -150,13 +165,13 @@ class Simulation:
             self.gate_indices[passed] = (self.gate_indices[passed] + self.cars.direction[passed]) % self.gates_tensor.shape[0]
 
         # Recompute rays for the updated car state so drawn rays match current car positions.
-        _, ray_dists_viz = get_inputs(self.cars, self.track, self.gates_tensor, self.gate_indices, self.max_ray_dist)
-        # ray_dists_viz are already in original units (pixels), no need to invert log normalization
-        ray_lengths = ray_dists_viz
-        ray_angles = self.cars.ray_angles  # [n_cars, n_rays]
-        dx = torch.cos(ray_angles) * ray_lengths  # [n_cars, n_rays]
-        dy = torch.sin(ray_angles) * ray_lengths
-        ray_ends = self.cars.pos.unsqueeze(1) + torch.stack([dx, dy], dim=2)
+        #_, ray_dists_viz = get_inputs(self.cars, self.track, self.gates_tensor, self.gate_indices, self.max_ray_dist)
+        ## ray_dists_viz are already in original units (pixels), no need to invert log normalization
+        #ray_lengths = ray_dists_viz
+        #ray_angles = self.cars.ray_angles  # [n_cars, n_rays]
+        #dx = torch.cos(ray_angles) * ray_lengths  # [n_cars, n_rays]
+        #dy = torch.sin(ray_angles) * ray_lengths
+        #ray_ends = self.cars.pos.unsqueeze(1) + torch.stack([dx, dy], dim=2)
 
         # --- Draw cars ---
         for i in range(self.n_cars):
@@ -167,19 +182,19 @@ class Simulation:
             color = "red" if self.cars.active[i] else "gray"
             self.canvas.itemconfig(self.car_rects[i], fill=color)
 
-        self.canvas.delete("ray")
-
-        for i in range(self.n_cars):
-            if not self.cars.active[i]:
-                continue  # skip inactive cars
-            start = self.cars.pos[i].cpu()
-            for j in range(ray_ends.shape[1]):
-                end = ray_ends[i, j].cpu()
-                x0, y0 = start.tolist()
-                x1, y1 = end.tolist()
-                self.canvas.create_line(
-                    x0, y0, x1, y1, fill="orange", width=0.1, tags="ray"
-                )
+        #self.canvas.delete("ray")
+#
+        #for i in range(self.n_cars):
+        #    if not self.cars.active[i]:
+        #        continue  # skip inactive cars
+        #    start = self.cars.pos[i].cpu()
+        #    for j in range(ray_ends.shape[1]):
+        #        end = ray_ends[i, j].cpu()
+        #        x0, y0 = start.tolist()
+        #        x1, y1 = end.tolist()
+        #        self.canvas.create_line(
+        #            x0, y0, x1, y1, fill="orange", width=0.1, tags="ray"
+        #        )
 
         self.canvas.delete("text")
         self.canvas.create_text(
@@ -218,10 +233,11 @@ class Simulation:
 
 # -----------------------------
 # Model to simulate (change this variable to switch models)
-MODEL_NAME = "carnet"  # Options: "gru", "lstm", "carnet", "separate_heads", "deep", "attention"
 
+def main():
 
-if __name__ == "__main__":
+    checkpoint_path = "/Users/samuelnoger/Programms/Drive_NN/checkpoints/us_track/last.pth"
+    MODEL_NAME = "carnet"  
     n_cars = 1
 
     # Load config.json if it exists
@@ -246,7 +262,6 @@ if __name__ == "__main__":
 
     track = Track(track_name, 1000, 600, device=device, ray_method=args.ray_method)
 
-    checkpoint_path = f"/Users/samuelnoger/Programms/Drive_NN/checkpoints/last_ckpt_CarNet.pth"
     print(f"Using model: {MODEL_NAME}")
     print(f"Loading checkpoint from: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
@@ -260,5 +275,8 @@ if __name__ == "__main__":
     model.eval()
 
     sim = Simulation(
-        track, model, n_cars=n_cars, n_rays=args.n_rays, start_idx=track.gates.shape[0] - 1, device=device, max_ray_dist=args.max_ray_dist, steer_smooth_alpha=args.steer_smooth_alpha
+        track, model, n_cars=n_cars, n_rays=args.n_rays, start_idx=track.gates.shape[0] - 1, device=device, max_ray_dist=args.max_ray_dist, steer_smooth_alpha=args.steer_smooth_alpha, steer_noise=args.steer_noise, accel_noise=args.accel_noise
     )
+
+if __name__ == "__main__":
+    main()

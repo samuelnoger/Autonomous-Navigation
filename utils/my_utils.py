@@ -26,6 +26,12 @@ def save_checkpoint(
         scheduler: Optional LR scheduler with state to save.
         best_reward: Best reward achieved so far.
     """
+    # Ensure destination directory exists
+    import os
+    dirpath = os.path.dirname(checkpoint_path)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
+
     torch.save(
         {
             "epoch": epoch,
@@ -250,3 +256,25 @@ def line_intersection(line1, line2):
     px = torch.where(mask, px, torch.full_like(px, float("nan")))
     py = torch.where(mask, py, torch.full_like(py, float("nan")))
     return torch.stack([px, py], dim=-1)
+
+
+def rotate_track(track_coords):
+    """Rotate the track 90 degrees.
+
+    Accepts a list of (x,y), a numpy array shape (N,2), or a torch tensor and
+    returns a list of (x,y) tuples suitable for downstream code that expects
+    Python sequence coordinates.
+    """
+    # Convert to numpy array for robust indexing
+    if isinstance(track_coords, torch.Tensor):
+        arr = track_coords.cpu().numpy()
+    else:
+        arr = np.asarray(track_coords)
+
+    if arr.ndim != 2 or arr.shape[1] < 2:
+        raise ValueError("rotate_track expects an array-like of shape (N,2)")
+
+    rotated = np.column_stack([-arr[:, 1], arr[:, 0]])
+
+    # Return as list of (x,y) tuples to match callers like `load_track`
+    return [tuple(p) for p in rotated]

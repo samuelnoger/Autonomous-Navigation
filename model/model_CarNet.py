@@ -85,14 +85,14 @@ class CarState:
         # Driving direction per car: 1 for forward, -1 for reverse
         self.direction = torch.ones(n_cars, dtype=torch.int64, device=device)
 
-        self.max_speed = 100.0
-        self.accel_rate = 5.0
-        self.breaking_rate = 10.0
+        self.max_speed = 80.0
+        self.accel_rate = 7.5
+        self.breaking_rate = 20.0
         self.friction = 0.02
         self.drift_factor = 0.25  # Velocity lag: 0 = instant, 1 = no effect
-        self.wheelbase = 10.0
+        self.wheelbase = 7.5
         self.max_steering_angle = math.pi / 4
-        self.max_grip_accel = 25.0
+        self.max_grip_accel = 20.0
         self.max_steering_rate = 1.0  
         self.enter_threshold = 1.0
         self.exit_threshold = 0.05
@@ -177,7 +177,7 @@ class CarState:
         self.prev_steer.zero_()
         self.was_slipping.zero_()
 
-        start_speed = 5.0
+        start_speed = 0.0
         self.speed.fill_(start_speed)
         self.vel = (
             torch.stack([torch.cos(self.angle), torch.sin(self.angle)], dim=1)
@@ -227,7 +227,6 @@ class CarState:
         # ============================================================================
         # SPEED: Acceleration + friction
         # ============================================================================
-        # Use elementwise logical ops for tensor masks (avoid Python `or/and`)
         accel_mask = (accel >= 0) | (self.speed <= 0)
         brake_mask = (accel < 0) & (self.speed > 0)
         self.speed[accel_mask] = self.speed[accel_mask] + accel[accel_mask] * accel_rate * dt

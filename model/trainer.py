@@ -20,6 +20,8 @@ class Trainer:
         checkpoint_path="checkpoints/last_ckpt.pth",
         max_ray_dist=500.0,
         steer_smooth_alpha=0.0,
+        steer_noise=0.02,
+        accel_noise=0.05,
     ):
         """Initialize the trainer.
 
@@ -41,6 +43,8 @@ class Trainer:
         self.checkpoint_path = checkpoint_path
         self.max_ray_dist = max_ray_dist
         self.steer_smooth_alpha = steer_smooth_alpha
+        self.steer_noise = steer_noise
+        self.accel_noise = accel_noise
 
         # Initialize reward plotter
         self.plotter = RewardPlotter()
@@ -92,7 +96,7 @@ class Trainer:
 
         # Reward rates (tunable hyperparameters)
         speed_reward_rate = 0.005
-        collision_penalty_rate = 20.0
+        collision_penalty_rate = 60.0
         gate_pass_reward_rate = 2.0
         wall_penalty_rate = 0.0 #change to 1.0 if training new model
         direction_reward_rate = 0.0 #change to 0.01 or 0.02 if training new model
@@ -138,6 +142,7 @@ class Trainer:
             & (gate_indices == (last_gate_indices + cars.direction) % self.track.gates.shape[0])
             & cars.active
         )
+
         gate_reward = torch.zeros_like(speed)
         with torch.no_grad():
             cars.gates_passed[passed_mask] += cars.direction[passed_mask]
@@ -243,8 +248,8 @@ class Trainer:
         steer_mean = outputs[:, 0]
         accel_mean = outputs[:, 1]
 
-        steer_dist = Normal(steer_mean, 0.1)
-        accel_dist = Normal(accel_mean, 0.15)
+        steer_dist = Normal(steer_mean, self.steer_noise)
+        accel_dist = Normal(accel_mean, self.accel_noise)
 
         steer = torch.clamp(steer_dist.sample(), -1, 1)
         accel = torch.clamp(accel_dist.sample(), -1, 1)
@@ -442,6 +447,8 @@ class Trainer:
         Returns:
             best_reward: Best reward achieved during training.
         """
+        current_lr = self.optimizer.param_groups[0]["lr"]
+
         # Initialize car states
         cars = CarState(n_cars, n_rays, device=self.device)
 
@@ -487,7 +494,6 @@ class Trainer:
             loss.backward()
             self.optimizer.step()
 
-
             # Scheduler step
             if self.scheduler is not None:
                 self.scheduler.step(episode_reward)
@@ -498,15 +504,19 @@ class Trainer:
             # Plot raw episode reward (keep normalized returns for loss only)
             self.plotter.add_reward(episode_reward)
 
-            if epoch % 10 == 0 and epoch != 0:
+            if self.optimizer.param_groups[0]["lr"] != current_lr:
+                epoch_bar.write(f"Epoch {epoch} [{self.track_name}] | LR changed from {current_lr:.2e} to {self.optimizer.param_groups[0]['lr']:.2e}")
                 current_lr = self.optimizer.param_groups[0]["lr"]
-                epoch_bar.write(
-                    f"Epoch {epoch} [{self.track_name}] | Total reward: {episode_reward:.2f} | "
-                    f"Speed:{mean_rewards['speed']:.2f}, Dir.:{mean_rewards['direction']:.2f}, "
-                    f"Gate:{mean_rewards['gate']:.2f}, Coll.:{mean_rewards['collision']:.2f}, "
-                    f"Wall:{mean_rewards['wall']:.2f}, Alive:{mean_rewards['alive']:.2f} | "
-                    f"Best:{best_reward:.2f} | LR:{current_lr:.2e}"
-                )
+
+            #if epoch % 10 == 0 and epoch != 0:
+            #    current_lr = self.optimizer.param_groups[0]["lr"]
+            #    epoch_bar.write(
+            #        f"Epoch {epoch} [{self.track_name}] | Total reward: {episode_reward:.2f} | "
+            #        f"Speed:{mean_rewards['speed']:.2f}, Dir.:{mean_rewards['direction']:.2f}, "
+            #        f"Gate:{mean_rewards['gate']:.2f}, Coll.:{mean_rewards['collision']:.2f}, "
+            #        f"Wall:{mean_rewards['wall']:.2f}, Alive:{mean_rewards['alive']:.2f} | "
+            #        f"Best:{best_reward:.2f} | LR:{current_lr:.2e}"
+            #    )
 
             save_checkpoint(
                 epoch,

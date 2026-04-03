@@ -2,7 +2,7 @@ import torch
 import math
 import numpy as np
 import cv2 # type: ignore
-from utils import line_intersection, generate_simple_track, generate_triangle_track
+from utils import line_intersection, generate_simple_track, generate_triangle_track, rotate_track
 import geopandas as gpd # type: ignore
 
 class Track:
@@ -33,9 +33,13 @@ class Track:
         """
         self.w = w
         self.h = h
-        self.car_radius = 2
-        self.outer_width = 32.5
-        self.inner_width = 7.5
+        self.car_radius = 1.0
+        if track_name == "redbull_ring":
+            self.outer_width = 28
+            self.inner_width = 4
+        else:
+            self.outer_width = 22
+            self.inner_width = 10
         self.track_width = self.outer_width + self.inner_width
         self.track_name = track_name
         self.ray_method = ray_method
@@ -342,8 +346,8 @@ class Track:
                 )
             elif track_name == "triangle":
                 gates_per_segment = 1
-                inner_width = 7.5
-                outer_width = 37.5
+                inner_width = 5
+                outer_width = 25
                 corner_radius = 25
                 centerline = generate_triangle_track(
                     screen_width,
@@ -376,20 +380,24 @@ class Track:
                 outer_width=outer_width,
                 inner_width=inner_width
             )
-            # Close loops without destroying the first vertex.
-            track_borders[0][-1] = track_borders[0][0]  # inner_border
-            track_borders[1][-1] = track_borders[1][0]  # outer_border
+            # Close loops by appending the first vertex at the end if not already closed.
+            for i in range(2):
+                if len(track_borders[i]) > 0 and not np.allclose(track_borders[i][0], track_borders[i][-1]):
+                    track_borders[i].append(track_borders[i][0])
 
         else:
             gates_per_segment = 1
             # Load custom track from geojson file
             import os
             track_path = track_name if os.path.isabs(track_name) else os.path.join(os.path.dirname(__file__), f"{track_name}.geojson")
+            if track_name == "us_track": rotate = True
+            else: rotate = False
             scaled_coords = self.load_track(
                 track_path,
                 canvas_width=screen_width,
                 canvas_height=screen_height,
-                padding=100
+                padding=100,
+                rotate = rotate
             )
 
             if len(scaled_coords) > 1 and np.allclose(scaled_coords[0], scaled_coords[-1]):
@@ -400,6 +408,11 @@ class Track:
                 outer_width=outer_width,
                 inner_width=inner_width
             )
+
+            # Ensure borders are closed (duplicate first point at end)
+            for i in range(2):
+                if len(track_borders[i]) > 0 and not np.allclose(track_borders[i][0], track_borders[i][-1]):
+                    track_borders[i].append(track_borders[i][0])
 
         centerline = self.compute_centerline(
             track_borders[0],
@@ -471,11 +484,12 @@ class Track:
         return gates
 
 
-    def load_track(self, geojson_path, canvas_width=800, canvas_height=600, padding=50):
+    def load_track(self, geojson_path, canvas_width=800, canvas_height=600, padding=50, rotate = True):
         # Load GeoJSON
         gdf = gpd.read_file(geojson_path)
         track_line = gdf.geometry.iloc[0]
         coords = list(track_line.coords)
+        coords = rotate_track(coords) if rotate else coords
 
         # Extract longitudes and latitudes
         lons, lats = zip(*coords)

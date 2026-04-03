@@ -56,7 +56,7 @@ def main():
     canvas = tk.Canvas(root, width=screen_width, height=screen_height, bg="white")
     canvas.pack()
     
-    track = Track("triangle",screen_width, screen_height)
+    track = Track("redbull_ring",screen_width, screen_height)
     
     draw_track(track, canvas)
     

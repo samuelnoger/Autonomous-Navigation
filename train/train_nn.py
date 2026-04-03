@@ -12,6 +12,37 @@ from model import CarNet, Trainer
 from utils import args_nn
 
 
+def load_checkpoint_state(checkpoint_path, model, optimizer, scheduler, device):
+    """Load checkpoint and return metadata.
+
+    Args:
+        checkpoint_path: Path to checkpoint file.
+        model: Model to load state into.
+        optimizer: Optimizer to load state into.
+        scheduler: Optional scheduler to load state into.
+        device: Device to load on.
+
+    Returns:
+        Tuple of (saved_epoch, best_reward, track_name)
+    """
+    print(f"Loading checkpoint from {checkpoint_path}...")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(checkpoint.get("model_state", {}))
+    try:
+        optimizer.load_state_dict(checkpoint.get("optimizer_state", {}))
+    except Exception:
+        pass
+    if scheduler is not None and checkpoint.get("scheduler_state") is not None:
+        try:
+            scheduler.load_state_dict(checkpoint.get("scheduler_state"))
+        except Exception:
+            pass
+    saved_epoch = checkpoint.get("epoch", 0)
+    best_reward = checkpoint.get("best_reward", -float("inf"))
+    track_name = checkpoint.get("track_name")
+    return saved_epoch, best_reward, track_name
+
+
 def main():
     parser = args_nn()
     args = parser.parse_args()
@@ -56,14 +87,24 @@ def main():
     model = CarNet(input_dim=args.input_dim, hidden_dim=args.hidden_dim, output_dim=args.output_dim, n_rays=n_rays).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
 
-    # Checkpoint path
-    checkpoint_dir = "checkpoints"
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    if os.path.dirname(args.checkpoint) == "":
-        checkpoint_base = os.path.splitext(args.checkpoint)[0]
-        checkpoint_path = os.path.join(checkpoint_dir, f"{checkpoint_base}_{model.__class__.__name__}.pth")
-    else:
-        checkpoint_path = args.checkpoint
+    # Checkpoint path: allow either a full .pth path or a base directory.
+    # If args.checkpoint ends with '.pth' treat as full path; otherwise
+    # treat it as a base directory and save under base_dir/{track_name}/last.pth
+    def build_checkpoint_path(arg_checkpoint, track_name):
+        if arg_checkpoint is None or arg_checkpoint == "":
+            base_dir = "checkpoints"
+        elif arg_checkpoint.endswith('.pth'):
+            return arg_checkpoint
+        else:
+            base_dir = arg_checkpoint
+
+        # ensure directory exists
+        path = os.path.join(base_dir, track_name, "last.pth")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return path
+
+    # Build initial checkpoint path using first track in schedule
+    checkpoint_path = build_checkpoint_path(args.checkpoint, tracks_list[0])
     print(f"Checkpoint will be saved to: {checkpoint_path}")
 
     # Scheduler
@@ -78,9 +119,17 @@ def main():
     best_reward = -float("inf")
     resume_phase = 0
     resume_epoch = 0
-    if os.path.exists(checkpoint_path):
-        print(f"Loading checkpoint from {checkpoint_path}...")
-        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+    # Determine which checkpoint to load for the initial phase
+    initial_checkpoint_path = None
+    if args.resume_checkpoint and os.path.exists(args.resume_checkpoint):
+        initial_checkpoint_path = args.resume_checkpoint
+    elif os.path.exists(checkpoint_path):
+        initial_checkpoint_path = checkpoint_path
+
+    if initial_checkpoint_path:
+        print(f"Loading checkpoint from {initial_checkpoint_path}...")
+        checkpoint = torch.load(initial_checkpoint_path, map_location=device)
         model.load_state_dict(checkpoint.get("model_state", {}))
         try:
             optimizer.load_state_dict(checkpoint.get("optimizer_state", {}))
@@ -138,6 +187,8 @@ def main():
         checkpoint_path=checkpoint_path,
         max_ray_dist=args.max_ray_dist,
         steer_smooth_alpha=args.steer_smooth_alpha,
+        steer_noise=args.steer_noise,
+        accel_noise=args.accel_noise,
     )
 
     # Run scheduled phases. If resuming from a checkpoint we start at
@@ -157,6 +208,37 @@ def main():
             trainer.track_start_idx = track.gates.shape[0] - 1
             trainer.track_name = track.track_name
 
+            # Update per-phase checkpoint path (store per-track under base dir)
+            trainer.checkpoint_path = build_checkpoint_path(args.checkpoint, track_name)
+
+            # Load track-specific checkpoint when switching to a new track
+            # (only if this is not the first phase being initially loaded)
+            if i > 0:
+                if args.resume_checkpoint:
+                    # Use manually specified checkpoint
+                    if os.path.exists(args.resume_checkpoint):
+                        saved_epoch, best_reward, _ = load_checkpoint_state(
+                            args.resume_checkpoint, model, optimizer, scheduler, device
+                        )
+                        start_epoch_for_phase = 0
+                        print(f"Loaded manual checkpoint from {args.resume_checkpoint}")
+                    else:
+                        print(f"Warning: specified resume_checkpoint {args.resume_checkpoint} not found, continuing without loading")
+                        start_epoch_for_phase = 0
+                elif os.path.exists(trainer.checkpoint_path):
+                    # Load track-specific checkpoint if it exists
+                    saved_epoch, best_reward, _ = load_checkpoint_state(
+                        trainer.checkpoint_path, model, optimizer, scheduler, device
+                    )
+                    start_epoch_for_phase = 0
+                else:
+                    # No checkpoint for this track, continue with current weights
+                    print(f"No checkpoint found for track '{track_name}', continuing with current model weights")
+                    start_epoch_for_phase = 0
+            else:
+                # First phase: use epoch from initial checkpoint loading
+                start_epoch_for_phase = resume_epoch
+
             for pg in optimizer.param_groups:
                 pg["lr"] = lr
             if scheduler is not None:
@@ -171,11 +253,6 @@ def main():
 
             trainer.optimizer = optimizer
             trainer.scheduler = scheduler
-            # Determine start epoch for this phase
-            if i == resume_phase:
-                start_epoch_for_phase = resume_epoch
-            else:
-                start_epoch_for_phase = 0
 
             trainer.fit(
                 n_cars=n_cars,

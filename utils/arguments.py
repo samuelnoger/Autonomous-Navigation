@@ -7,12 +7,12 @@ def args_nn():
     parser.add_argument("--n_epochs", type=int, default=500, help="Number of epochs to train")
     parser.add_argument("--n_steps", type=int, default=1000, help="Steps per epoch")
     parser.add_argument("--lr", type=float, default=5e-4, help="Learning rate")
-    parser.add_argument("--input_dim", type=int, default=26, help="Input dimension size (n_rays[17] + speed[1] + heading[2] + dist_to_gate[1] + min_ray[1] + curvature[6] = 26)")
+    parser.add_argument("--input_dim", type=int, default=27, help="Input dimension size (n_rays[17] + speed[1] + curvature[6] + distances[3] = 27)")
     parser.add_argument("--hidden_dim", type=int, default=128, help="Hidden dimension size")
     parser.add_argument("--output_dim", type=int, default=2, help="Output dimension size")
     parser.add_argument("--track", type=str, default="simple", help="Track name or path to geojson")
     parser.add_argument("--device",type=str,default=None,help="Device (mps/cpu/cuda), auto-detect if not specified",)
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/last_ckpt.pth", help="Checkpoint file path")
+    parser.add_argument("--checkpoint",type=str,default="checkpoints",help="Checkpoint file or base directory. If a .pth file is provided it will be used directly; otherwise files are stored under base_dir/{track_name}/last.pth",)
     parser.add_argument("--lr_factor",type=float,default=0.5,help="ReduceLROnPlateau factor (new_lr = lr * factor)")
     parser.add_argument("--lr_patience",type=int,default=25,help="Epochs without reward improvement before reducing LR",)
     parser.add_argument("--min_lr", type=float, default=1e-6, help="Minimum learning rate")
@@ -25,5 +25,8 @@ def args_nn():
     parser.add_argument("--tracks",nargs="+",type=str,default=None,help="Comma-separated list of track names to train sequentially, e.g. 'simple,square,triangle'")
     parser.add_argument("--epochs", nargs="+", type=int, default=None, help="List of epoch counts matching --tracks, e.g. '100 150 200' or CSV '100,150'.")
     parser.add_argument("--save_plot", type=str, default="reward_plot.png", help="Path to save the final reward plot image after training; set empty to disable saving.")
-    
+    parser.add_argument("--steer_noise", type=float, default=0.01, help="Standard deviation of Gaussian noise added to steering output during training for exploration (0 disables noise)")
+    parser.add_argument("--accel_noise", type=float, default=0.02, help="Standard deviation of Gaussian noise added to acceleration output during training for exploration (0 disables noise)")
+    parser.add_argument("--resume_checkpoint", type=str, default=None, help="Optional checkpoint path to load when switching to a new track. Overrides normal track checkpoint loading.")
+
     return parser
