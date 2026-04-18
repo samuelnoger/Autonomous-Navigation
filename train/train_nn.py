@@ -3,13 +3,14 @@
 import os
 import json
 import torch
+import time
 import torch.optim as optim
 from torch.profiler import profile, ProfilerActivity
 import sys
 
 from track import Track
 from model import CarNet, Trainer
-from utils import args_nn
+from utils import args_nn, load_checkpoint_tolerant
 
 
 def load_checkpoint_state(checkpoint_path, model, optimizer, scheduler, device):
@@ -25,21 +26,18 @@ def load_checkpoint_state(checkpoint_path, model, optimizer, scheduler, device):
     Returns:
         Tuple of (saved_epoch, best_reward, track_name)
     """
-    print(f"Loading checkpoint from {checkpoint_path}...")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint.get("model_state", {}))
-    try:
-        optimizer.load_state_dict(checkpoint.get("optimizer_state", {}))
-    except Exception:
-        pass
-    if scheduler is not None and checkpoint.get("scheduler_state") is not None:
-        try:
-            scheduler.load_state_dict(checkpoint.get("scheduler_state"))
-        except Exception:
-            pass
-    saved_epoch = checkpoint.get("epoch", 0)
-    best_reward = checkpoint.get("best_reward", -float("inf"))
-    track_name = checkpoint.get("track_name")
+    # Use tolerant loader which copies matching parameters and partially copies
+    # parameters when shapes differ (e.g. input-dimension changed). It will also
+    # attempt to restore optimizer and scheduler state when available.
+    ckpt = load_checkpoint_tolerant(checkpoint_path, model, optimizer=optimizer, scheduler=scheduler, device=device, verbose=True)
+    if isinstance(ckpt, dict):
+        saved_epoch = ckpt.get("epoch", 0)
+        best_reward = ckpt.get("best_reward", -float("inf"))
+        track_name = ckpt.get("track_name")
+    else:
+        saved_epoch = 0
+        best_reward = -float("inf")
+        track_name = None
     return saved_epoch, best_reward, track_name
 
 
@@ -115,7 +113,6 @@ def main():
         )
 
     # Optionally load checkpoint
-    start_epoch = 0
     best_reward = -float("inf")
     resume_phase = 0
     resume_epoch = 0
@@ -129,21 +126,15 @@ def main():
 
     if initial_checkpoint_path:
         print(f"Loading checkpoint from {initial_checkpoint_path}...")
-        checkpoint = torch.load(initial_checkpoint_path, map_location=device)
-        model.load_state_dict(checkpoint.get("model_state", {}))
-        try:
-            optimizer.load_state_dict(checkpoint.get("optimizer_state", {}))
-        except Exception:
-            pass
-        if scheduler is not None and checkpoint.get("scheduler_state") is not None:
-            try:
-                scheduler.load_state_dict(checkpoint.get("scheduler_state"))
-            except Exception:
-                pass
-        saved_epoch = checkpoint.get("epoch", 0)
-        ckpt_track = checkpoint.get("track_name")
+        checkpoint = load_checkpoint_tolerant(initial_checkpoint_path, model, optimizer=optimizer, scheduler=scheduler, device=device, verbose=True)
+        # checkpoint may be dict or other return; guard accesses
+        if isinstance(checkpoint, dict):
+            saved_epoch = checkpoint.get("epoch", 0)
+            ckpt_track = checkpoint.get("track_name")
+        else:
+            saved_epoch = 0
+            ckpt_track = None
         if args.start_mode == "start_new":
-            start_epoch = 0
             best_reward = -float("inf")
             for pg in optimizer.param_groups:
                 pg["lr"] = args.lr
@@ -156,7 +147,6 @@ def main():
             # Resume training using the checkpoint metadata. We resume model
             # and optimizer state; we also determine which schedule phase and
             # epoch to continue from if the checkpoint recorded a track name.
-            start_epoch = saved_epoch + 1
             best_reward = checkpoint.get("best_reward", -float("inf"))
             if ckpt_track is not None and ckpt_track in tracks_list:
                 resume_phase = tracks_list.index(ckpt_track)
@@ -177,7 +167,9 @@ def main():
 
     # Create first Track and Trainer
     first_track_name = schedule[0][0]
+    t0_track = time.time()
     first_track = Track(first_track_name, screen_width, screen_height, device=device, ray_method=args.ray_method)
+    # Startup track construction timing print removed
     trainer = Trainer(
         model=model,
         track=first_track,
@@ -185,11 +177,9 @@ def main():
         scheduler=scheduler,
         device=device,
         checkpoint_path=checkpoint_path,
-        max_ray_dist=args.max_ray_dist,
-        steer_smooth_alpha=args.steer_smooth_alpha,
-        steer_noise=args.steer_noise,
-        accel_noise=args.accel_noise,
+        args=args,
     )
+    # Startup model/trainer creation print removed
 
     # Run scheduled phases. If resuming from a checkpoint we start at
     # `resume_phase` and for that phase begin at `resume_epoch`.

@@ -2,6 +2,7 @@ import torch
 import math
 import numpy as np
 import cv2 # type: ignore
+import time
 from utils import line_intersection, generate_simple_track, generate_triangle_track, rotate_track
 import geopandas as gpd # type: ignore
 
@@ -17,6 +18,7 @@ class Track:
         sphere_max_steps=48,
         sphere_hit_epsilon=1.5,
         sphere_min_step=0.5,
+        ray_chunk_size=128,
     ):
         """Initialize track with geometry and collision detection.
 
@@ -33,7 +35,7 @@ class Track:
         """
         self.w = w
         self.h = h
-        self.car_radius = 1.0
+        self.car_radius = 1.5
         if track_name == "redbull_ring":
             self.outer_width = 28
             self.inner_width = 4
@@ -46,6 +48,9 @@ class Track:
         self.sphere_max_steps = sphere_max_steps
         self.sphere_hit_epsilon = sphere_hit_epsilon
         self.sphere_min_step = sphere_min_step
+        # Chunking for ray-line intersection to reduce peak memory and kernel overhead
+        # Set to <=0 to disable chunking (process all cars in one pass)
+        self.ray_chunk_size = ray_chunk_size
 
         self.left_border, self.right_border, self.gates = self.get_items(
             track_name,
@@ -122,6 +127,7 @@ class Track:
 
         Creates a 2D distance field where each pixel contains the distance to the nearest wall.
         """
+        t0 = time.time()
         # Create white image (track space)
         img = np.ones((self.h, self.w), dtype=np.uint8) * 255
 
@@ -135,6 +141,7 @@ class Track:
 
         # Convert to torch tensor
         self.distance_field = torch.tensor(dist, dtype=torch.float32, device=device)
+        # build_distance_field timing print removed
 
     def _sample_distance_field_bilinear(self, points):
         """Bilinear sample distance field at points of shape (K,2)."""
@@ -211,38 +218,55 @@ class Track:
         """Original segment-intersection ray cast."""
         N, R = ray_angles.shape
         device = positions.device
-
-        # Compute ray endpoints
-        dx = torch.cos(ray_angles) * max_dist  # (N,R)
-        dy = torch.sin(ray_angles) * max_dist
-        ray_ends = positions.unsqueeze(1) + torch.stack([dx, dy], dim=-1)  # (N,R,2)
-
-        # Flatten rays for vectorized line intersection
-        rays_start = positions.unsqueeze(1).expand(-1, R, 2).reshape(-1, 2)  # (N*R,2)
-        rays_end = ray_ends.reshape(-1, 2)  # (N*R,2)
-        ray_lines = torch.cat([rays_start, rays_end], dim=1)  # (N*R,4)
-
         # Cache line tensor on the active device to avoid repeated transfers.
         device_key = str(device)
         if device_key not in self._all_lines_by_device:
             self._all_lines_by_device[device_key] = self.all_lines.to(device)
         track_lines = self._all_lines_by_device[device_key]  # (M,4)
         M = track_lines.shape[0]
-        ray_lines_exp = ray_lines.unsqueeze(1).expand(-1, M, 4)  # (N*R,M,4)
-        track_lines_exp = track_lines.unsqueeze(0).expand(N * R, -1, -1)  # (N*R,M,4)
 
-        # Compute intersections
-        inter = line_intersection(ray_lines_exp, track_lines_exp)  # (N*R,M,2)
-        inter_valid = ~torch.isnan(inter[..., 0])
+        # Preallocate output
+        out = torch.empty((N, R), device=device)
 
-        # Distances
-        ray_pos = rays_start.unsqueeze(1).expand(-1, M, 2)
-        dists2 = ((inter - ray_pos) ** 2).sum(dim=-1)  # (N*R,M)
-        dists2[~inter_valid] = max_dist * max_dist
+        # Determine chunk size: <=0 means no chunking (process all cars at once)
+        if self.ray_chunk_size is None or self.ray_chunk_size <= 0:
+            chunk = N
+        else:
+            chunk = max(1, min(self.ray_chunk_size, N))
 
-        # Minimum distance per ray
-        min_dists2, _ = dists2.min(dim=1)  # (N*R,)
-        return torch.sqrt(min_dists2).reshape(N, R)
+        for i in range(0, N, chunk):
+            j = min(i + chunk, N)
+            pos_chunk = positions[i:j]  # (C,2)
+            ang_chunk = ray_angles[i:j]  # (C,R)
+
+            C = pos_chunk.shape[0]
+            # Compute ray endpoints for this chunk
+            dx = torch.cos(ang_chunk) * max_dist  # (C,R)
+            dy = torch.sin(ang_chunk) * max_dist
+            ray_ends = pos_chunk.unsqueeze(1) + torch.stack([dx, dy], dim=-1)  # (C,R,2)
+
+            # Flatten rays for this chunk
+            rays_start = pos_chunk.unsqueeze(1).expand(-1, R, 2).reshape(-1, 2)  # (C*R,2)
+            rays_end = ray_ends.reshape(-1, 2)  # (C*R,2)
+            ray_lines = torch.cat([rays_start, rays_end], dim=1)  # (C*R,4)
+
+            # Expand to compare with track lines
+            ray_lines_exp = ray_lines.unsqueeze(1).expand(-1, M, 4)  # (C*R,M,4)
+            track_lines_exp = track_lines.unsqueeze(0).expand(ray_lines_exp.shape[0], -1, -1)  # (C*R,M,4)
+
+            # Compute intersections for this chunk
+            inter = line_intersection(ray_lines_exp, track_lines_exp)  # (C*R,M,2)
+            inter_valid = ~torch.isnan(inter[..., 0])
+
+            # Distances
+            ray_pos = rays_start.unsqueeze(1).expand(-1, M, 2)
+            dists2 = ((inter - ray_pos) ** 2).sum(dim=-1)  # (C*R,M)
+            dists2[~inter_valid] = max_dist * max_dist
+
+            min_dists2, _ = dists2.min(dim=1)  # (C*R,)
+            out[i:j] = torch.sqrt(min_dists2).reshape(C, R)
+
+        return out
     
     def get_nearby_lines(self, x, y):
         gx = int((x / self.cell_size).item())
