@@ -55,9 +55,9 @@ def args_nn():
     parser.add_argument("--speed_reward_rate", type=float, default=0.0025, help="Per-step speed reward rate (multiplies speed)")
     parser.add_argument("--collision_penalty_rate", type=float, default=60.0, help="Penalty applied on collision / crash")
     parser.add_argument("--gate_pass_reward_rate", type=float, default=2.0, help="Reward for passing a gate")
-    parser.add_argument("--wall_penalty_rate", type=float, default=5.0, help="Penalty rate for proximity to walls")
-    parser.add_argument("--direction_reward_rate", type=float, default=0.0, help="Reward rate for heading toward next gate")
-    parser.add_argument("--alive_reward_rate", type=float, default=0.02, help="Small per-step reward for being active")
+    parser.add_argument("--wall_penalty_rate", type=float, default=2.0, help="Penalty rate for proximity to walls")
+    parser.add_argument("--direction_reward_rate", type=float, default=0.02, help="Reward rate for heading toward next gate")
+    parser.add_argument("--alive_reward_rate", type=float, default=0.0, help="Small per-step reward for being active")
 
     # Noise / smoothing
     parser.add_argument("--steer_smooth_alpha", type=float, default=0.8, help="Steering smoothing factor (0 disables smoothing)")
