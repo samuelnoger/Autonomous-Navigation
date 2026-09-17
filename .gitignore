@@ -4,3 +4,4 @@ checkpoints/
 *.pth
 config.json
 reward_plot.png
+test_draw.py
