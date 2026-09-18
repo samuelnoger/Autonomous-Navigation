@@ -1,215 +1,26 @@
-# Drive_NN
+# Autonomous Navigation & Vectorized Physics (Drive_NN)
 
-Drive_NN is a PyTorch-based racing project where a neural network learns to drive a car around 2D tracks using ray-based observations, continuous steering, and acceleration control.
+A PyTorch-based simulation environment and training pipeline where a neural network agent learns to navigate 2D tracks. The project features a custom-built, fully vectorized physics engine and uses 1D convolutional ray-casting for spatial perception.
 
-## Overview
-
-The project contains:
-- a training pipeline for learning driving behavior on one or more tracks
-- a Tkinter simulation viewer for running trained models or random policies
-- several model variants, including recurrent and attention-based architectures
-- track generation and loading for both built-in layouts and GeoJSON tracks
-- live reward plotting during training
+## Architecture Highlights
+- **Vectorized Physics Engine:** Simulates Ackermann kinematics, centripetal drift, grip dynamics, and batched car-to-car collision resolution entirely using PyTorch tensors.
+- **Sensor-Based Perception:** Ray-cast distances are treated as 1D spatial signals and processed via a `Conv1d` encoder.
+- **Control Strategy:** Continuous action space (acceleration and steering) utilizing state-fusion (ray features + velocity/heading).
+- **Model Variants:** Includes LSTM, GRU, and Attention-based network architectures alongside the standard Convolutional model.
 
 ## Features
+- **Batched Training:** Capable of simulating and training hundreds of agents simultaneously on a single GPU.
+- **Real-Time Simulation Viewer:** Tkinter-based GUI for evaluating trained policies or running random agents.
+- **Dynamic Track Loading:** Supports built-in procedural tracks and real-world layouts via GeoJSON data.
+- **Sequential Curriculum:** Agents can be trained across multiple tracks sequentially with per-track checkpointing.
 
-- Continuous control for steering and acceleration
-- Ray-cast track perception
-- Multiple track layouts, including built-in and GeoJSON-based tracks
-- Sequential training across multiple tracks
-- Per-track checkpoints and resume support
-- Real-time simulation with Tkinter
-- Live reward plot in a separate process
-
-## Project Layout
-
-```text
-Drive_NN/
-├── model/
-│   ├── model_CarNet.py
-│   ├── model_variants.py
-│   └── trainer.py
-├── track/
-│   ├── track.py
-│   ├── redbull_ring.geojson
-│   └── us_track.geojson
-├── train/
-│   └── train_nn.py
-├── utils/
-│   ├── arguments.py
-│   ├── my_utils.py
-│   └── plot_rewards.py
-├── simulate_nn.py
-├── train_nn.sh
-└── checkpoints/
-```
+## Project Structure
+* `/model/` - Neural network architectures (`CarNet`, LSTM/GRU variants) and the core RL trainer.
+* `/track/` - Procedural generation and GeoJSON parsers for track rendering.
+* `/train/` - Training loop execution and hyperparameter configuration.
+* `/utils/` - Live reward plotting and utility functions.
+* `simulate_nn.py` - Tkinter simulation viewer for trained checkpoints.
 
 ## Requirements
-
-The project uses:
-- Python 3.11+
-- PyTorch
-- NumPy
-- Matplotlib
-- OpenCV
-- GeoPandas
-- Tkinter
-
-A typical install looks like:
-
 ```bash
 pip install torch numpy matplotlib opencv-python geopandas
-```
-
-If you already have a working virtual environment, activate it before running training or simulation.
-
-## Quick Start
-
-### 1. Train a model
-
-Use the shell script for the default training setup:
-
-```bash
-./train_nn.sh
-```
-
-Or run the trainer directly:
-
-```bash
-python3 -m train.train_nn \
-  --track triangle \
-  --n_epochs 300 \
-  --n_steps 1600 \
-  --n_cars 512
-```
-
-### 2. Watch a simulation
-
-Run the Tkinter viewer with a random policy:
-
-```bash
-python3 simulate_nn.py
-```
-
-Load a trained checkpoint:
-
-```bash
-python3 simulate_nn.py
-```
-
-The simulation script currently loads `checkpoints/us_track/last.pth` by default in its example configuration, so update the path in `simulate_nn.py` if you want to visualize another checkpoint.
-
-## Training
-
-### Main trainer
-
-The core training entry point is:
-
-```bash
-python3 -m train.train_nn
-```
-
-Useful arguments:
-- `--track`: track name or path to a GeoJSON file
-- `--tracks`: list of tracks to train sequentially
-- `--epochs`: epoch counts matching `--tracks`
-- `--checkpoint`: checkpoint directory or direct `.pth` path
-- `--resume_checkpoint`: checkpoint to load when switching tracks
-- `--start_mode`: `continue` or `start_new`
-- `--force_lr`: reset learning rate when resuming
-- `--disable_lr_scheduler`: turn off plateau-based LR reduction
-
-### Training script
-
-`train_nn.sh` is a convenience wrapper around the Python trainer. It sets a default training configuration and can be edited at the top for your preferred:
-- number of cars
-- number of epochs
-- learning rate
-- track sequence
-- checkpoint paths
-
-### Checkpoints
-
-Training saves checkpoints per track under:
-
-```text
-checkpoints/<track_name>/last.pth
-```
-
-Examples:
-- `checkpoints/triangle/last.pth`
-- `checkpoints/us_track/last.pth`
-- `checkpoints/redbull_ring/last.pth`
-
-If you pass a direct `.pth` file to `--checkpoint`, the trainer uses that exact file.
-If you pass a directory, it saves into `<directory>/<track_name>/last.pth`.
-
-## Simulation
-
-The Tkinter viewer is in `simulate_nn.py`.
-
-It:
-- loads a trained `CarNet` checkpoint
-- builds the selected track
-- runs the simulation with a GUI canvas
-- uses the same input preprocessing as training
-
-### Example usages
-
-Random policy:
-
-```bash
-python3 simulate_nn.py
-```
-
-Use a custom track from the command line arguments:
-
-```bash
-python3 simulate_nn.py --config --track triangle
-```
-
-To test another checkpoint, update the `checkpoint_path` value in `simulate_nn.py`.
-
-## Tracks
-
-Supported named tracks include:
-- `simple`
-- `square`
-- `triangle`
-- `square_narrow`
-- `us_track`
-- `redbull_ring`
-
-You can also load an absolute path to a GeoJSON track file.
-
-## Models
-
-The default network is `CarNet`, which uses:
-- a 1D convolutional encoder for ray inputs
-- a small MLP for state features
-- a final control head that outputs steering and acceleration
-
-Additional architectures are available in `model/model_variants.py`:
-- `LSTMCarNet`
-- `GRUCarNet`
-- `SeparateHeadsCarNet`
-- `DeepCarNet`
-- `AttentionCarNet`
-
-## Live Reward Plot
-
-During training, rewards are plotted in real time using `utils/plot_rewards.py`.
-The plot runs in a separate process so training is not blocked by the UI.
-
-The plot can also be saved from the training code if needed.
-
-## Tips
-
-- Start with a simple track like `simple` or `triangle` when debugging training.
-- If training is unstable, lower the learning rate or try the recurrent variants.
-- If simulation fails to open, verify that Tkinter is available in your Python install.
-- For custom GeoJSON tracks, make sure the file is readable from the path you pass in.
-
-## Notes
-
-This README is intentionally focused on the current code in this workspace. If you change the training script or checkpoint layout later, update the examples here as well.
