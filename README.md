@@ -1,5 +1,3 @@
-sorry i meant for the Autonomous-Navigation-LiDAR project, (i also have to change the name in this readme):
-
 # Autonomous-Navigation-LiDAR
 
 This is a PyTorch-based racing project where a neural network learns to drive a car around 2D tracks using ray-based observations, continuous steering, and acceleration control.
