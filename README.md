@@ -1,4 +1,4 @@
-# Autonomous-Navigation-LiDAR
+# Autonomous-Navigation
 
 This is a PyTorch-based racing project where a neural network learns to drive a car around 2D tracks using ray-based observations, continuous steering, and acceleration control.
 
