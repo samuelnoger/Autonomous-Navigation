@@ -163,6 +163,9 @@ Additional architectures are available in `model/model_variants.py`:
 - If simulation fails to open, verify that Tkinter is available in your Python install.
 - For custom GeoJSON tracks, make sure the file is readable from the path you pass in.
 
+## Development Methodology
+The core neural network architectures and boilerplate PyTorch code for this project were scaffolded with the assistance of AI coding tools. My primary technical contributions focus on the conceptual design, physics engine integration, hyperparameter tuning, and orchestrating the end-to-end training pipelines on Apple Silicon/MPS.
+
 ## Notes
 
 This README is intentionally focused on the current code in this workspace. If you change the training script or checkpoint layout later, update the examples here as well.
